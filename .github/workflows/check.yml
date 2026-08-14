@@ -1,0 +1,38 @@
+name: check
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  syntax:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: JS syntax check
+        run: |
+          node --check index.js
+          node --check client/index.js
+
+      - name: Python syntax check
+        run: |
+          python -m py_compile scripts/_hermes_scan.py \
+            scripts/_chat_preview.py \
+            scripts/_mcp_detail.py
+
+      - name: Validate cordis.patch.yml structure
+        run: |
+          grep -q "name: 'hermes-to-dsh'" cordis.patch.yml
+          grep -q '"name": "hermes-to-dsh"' package.json
