@@ -1,0 +1,47 @@
+{
+  "name": "hermes-to-dsh",
+  "version": "0.1.0",
+  "description": "Hermes to DSH — browse your local Hermes skills / MCP servers / chats right inside the DeepSeek Harness web sidebar, and inject selected skills & MCP config into the active agent.",
+  "type": "module",
+  "main": "./index.js",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client/index.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json",
+    "./scripts/*": "./scripts/*"
+  },
+  "files": [
+    "index.js",
+    "client",
+    "scripts",
+    "cordis.patch.yml",
+    "README.md",
+    "README.zh.md",
+    "LICENSE",
+    "AGENTS.md"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web"
+    }
+  },
+  "scripts": {
+    "prepare": "tsc --noEmit || echo 'no typescript check configured'"
+  },
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "dsh-bundle",
+    "deepseek-harness",
+    "hermes",
+    "skill",
+    "mcp",
+    "ui",
+    "sidebar"
+  ],
+  "license": "MIT"
+}
