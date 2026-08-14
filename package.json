@@ -1,7 +1,7 @@
 {
   "name": "hermes-to-dsh",
   "version": "0.1.0",
-  "description": "Hermes to DSH — browse your local Hermes skills / MCP servers / chats right inside the DeepSeek Harness web sidebar, and inject selected skills & MCP config into the active agent.",
+  "description": "DSH plugin — browse local Hermes skills / MCP servers / chats in the DeepSeek Harness web sidebar, and inject selected skills & MCP config into the active agent (active/passive mode).",
   "type": "module",
   "main": "./index.js",
   "exports": {
