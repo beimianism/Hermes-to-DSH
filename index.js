@@ -16,7 +16,9 @@ const SKILL_CAP = 5000;
 const TOTAL_CAP = 12000;
 
 export default {
-  inject: ['subprocess', 'shell', 'fs', 'systemPrompt', 'agents', 'sessions'],
+  // ⚠️ 只声明原生 web profile 真实存在的服务——声明不存在的服务会让
+  // Cordis 永久等待、apply 永不执行（曾因声明 agents/sessions/systemPrompt 导致 404）。
+  inject: ['subprocess', 'shell', 'fs'],
   name: 'hermes-to-dsh',
   apply(ctx) {
     const sub = ctx.get('subprocess');
@@ -165,58 +167,74 @@ export default {
       ? sp.section({ name:'hermes:mode', order: 110, text: () => buildSection() }) : null;
     if (sec) ctx.on('dispose', () => { try { sec(); } catch (e) {} });
 
-    // --- RPC surface (dynamic-plugin contract: harness.handle) ---
-    // In a native bundle these move onto the profile's router; when loaded as a
-    // dynamic in-session plugin they register via `harness.handle`. Both paths
-    // expose the same JSON method names the client calls.
-    const handlers = {
-      inspect: async () => { const det = await runScan(); scanCache = det; return { detected: det }; },
-      chatPreview: async (a) => chatPreview(String((a && a.id) || ''), a && a.openN, a && a.latestM, a && a.roles),
-      mcpDetail: async (a) => ({ detail: await readMcpDetail(String((a && a.id) || '')) }),
-      setMode: async (a) => {
-        mode.active = !!a && !!a.active;
-        mode.skills = Array.isArray(a && a.skills) ? a.skills.map(String) : [];
-        mode.mcp = Array.isArray(a && a.mcp) ? a.mcp.map(String) : [];
-        const texts = {};
-        let budget = TOTAL_CAP;
-        if (mode.active) {
-          for (let j = 0; j < mode.skills.length && budget > 0; j++) {
-            const nm = mode.skills[j];
-            if (budget <= 0) { texts[nm] = '（已超总量上限，未加载全文）'; continue; }
-            const full = await readSkillText(nm);
-            texts[nm] = full.length > budget ? full.slice(0, budget) : full;
-            budget -= texts[nm].length;
-          }
-        }
-        mode.skillTexts = texts;
-        const mtexts = {};
-        if (mode.active) {
-          for (let q = 0; q < mode.mcp.length; q++) mtexts[mode.mcp[q]] = await readMcpDetail(mode.mcp[q]);
-        }
-        mode.mcpTexts = mtexts;
-        await writeSelection();
-        await notifyInSession();
-        return { ok:true, persisted:true };
-      },
-      detail: async (a) => {
-        const id = a && a.id;
-        if (!id || !fsService) return { content: '' };
-        const s = (scanCache && scanCache.skills || []).find(x => x.name === id);
-        const p = s && s.path;
-        if (!p) return { content: '' };
-        try { const t = await fsService.resolve(p + '/SKILL.md'); return { content: await fsService.readText(t) }; }
-        catch (e) { return { content:'', error: String((e && e.message) ? e.message : e) }; }
-      },
-    };
-
-    if (typeof harness !== 'undefined' && harness && typeof harness.handle === 'function') {
-      Object.keys(handlers).forEach(k => harness.handle(k, handlers[k]));
-    } else {
-      // Native: expose via ctx.rpc if available (profile router).
-      const router = ctx.get('rpc') || ctx.get('router');
-      if (router && typeof router.handle === 'function') {
-        Object.keys(handlers).forEach(k => router.handle('hermes.' + k, handlers[k]));
+    // ── RPC surface: native bundle contract via ctx.connection.rpc ─────────
+    // 用 handle() 注册独立物理路由 /hermes/* —— 它通过 owner.webServer.register
+    // 真实挂载路由,不依赖 interceptors map 的实例共享(intercept 曾因此 404)。
+    // client: ctx.connection.rpc.call('/hermes', 'inspect', payload)
+    const wireRpc = (connection) => {
+      if (!connection || !connection.rpc || typeof connection.rpc.handle !== 'function') {
+        return null;
       }
+      const disposer = connection.rpc.handle('/hermes', async (endpoint, payload, _signal) => {
+        const method = typeof endpoint === 'string' ? endpoint : '';
+        const a = (payload && typeof payload === 'object') ? payload : {};
+        try {
+          let value;
+          if (method === 'inspect') {
+            const det = await runScan(); scanCache = det; value = { detected: det };
+          } else if (method === 'chatPreview') {
+            value = await chatPreview(String(a.id || ''), a.openN, a.latestM, a.roles);
+          } else if (method === 'mcpDetail') {
+            value = { detail: await readMcpDetail(String(a.id || '')) };
+          } else if (method === 'setMode') {
+            mode.active = !!a.active;
+            mode.skills = Array.isArray(a.skills) ? a.skills.map(String) : [];
+            mode.mcp = Array.isArray(a.mcp) ? a.mcp.map(String) : [];
+            const texts = {}; let budget = TOTAL_CAP;
+            if (mode.active) {
+              for (let j = 0; j < mode.skills.length && budget > 0; j++) {
+                const nm = mode.skills[j];
+                if (budget <= 0) { texts[nm] = '（已超总量上限，未加载全文）'; continue; }
+                const full = await readSkillText(nm);
+                texts[nm] = full.length > budget ? full.slice(0, budget) : full;
+                budget -= texts[nm].length;
+              }
+            }
+            mode.skillTexts = texts;
+            const mtexts = {};
+            if (mode.active) { for (let q = 0; q < mode.mcp.length; q++) mtexts[mode.mcp[q]] = await readMcpDetail(mode.mcp[q]); }
+            mode.mcpTexts = mtexts;
+            await writeSelection(); await notifyInSession();
+            value = { ok: true, persisted: true };
+          } else if (method === 'detail') {
+            const id = a.id;
+            if (!id || !fsService) value = { content: '' };
+            else {
+              const s = (scanCache && scanCache.skills || []).find(x => x.name === id);
+              const p = s && s.path;
+              if (!p) value = { content: '' };
+              else { const t = await fsService.resolve(p + '/SKILL.md'); value = { content: await fsService.readText(t) }; }
+            }
+          } else {
+            return { ok: false, error: { code: 'bad-request', message: 'unknown endpoint: ' + endpoint, details: {} } };
+          }
+          return { ok: true, value };
+        } catch (e) {
+          return { ok: false, error: { code: 'internal', message: String((e && e.message) ? e.message : e), details: {} } };
+        }
+      }, { authority: 'trusted-host' });
+      return disposer;
+    };
+    // connection 服务是异步提供的：必须用嵌套 ctx.inject 等待其就绪，
+    // 并在回调里以属性访问（cctx.connection）——完全照抄 api-gateway 的写法。
+    if (ctx.inject && typeof ctx.inject === 'function') {
+      ctx.inject(['connection'], (cctx) => {
+        const d = wireRpc(cctx.connection);
+        if (d) ctx.on('dispose', () => { try { if (typeof d === 'function') d(); else d.then?.((dd) => dd?.()); } catch (e) {} });
+      });
+    } else {
+      const d = wireRpc(ctx.get('connection'));
+      if (d) ctx.on('dispose', () => { try { if (typeof d === 'function') d(); else d.then?.((dd) => dd?.()); } catch (e) {} });
     }
   },
 };

@@ -1,5 +1,41 @@
-export default {
-  apply(ctx) {
+window.__ModuleLoader__.load({
+  id: "hermes-to-dsh",
+  factory: (require) => {
+    var module = { exports: {} };
+    var exports = module.exports;
+    Object.defineProperty(exports, Symbol.toStringTag, { value: "Module" });
+    const React = require("react");
+    const { useEffect, useReducer } = React;
+
+    function injectCss(css) {
+      try {
+        let el = document.getElementById("hermes-to-dsh-style");
+        if (!el) { el = document.createElement("style"); el.id = "hermes-to-dsh-style"; el.setAttribute("type", "text/css"); (document.head || document.documentElement).appendChild(el); }
+        if (el.textContent !== css) el.textContent = css;
+      } catch (e) {}
+    }
+    const styles = { insert: injectCss };
+
+    // Native host RPC compat: host.call(method, args) -> /hermes channel route
+    // (host registers it via connection.rpc.handle with a physical route).
+    function makeHost(rpcCall) {
+      return {
+        call: async (method, args) => {
+          const r = await rpcCall("/hermes", method, args || {});
+          if (r && r.ok) return r.value;
+          const msg = (r && r.error && r.error.message) ? r.error.message : ("RPC failed: " + method);
+          const err = new Error(msg); err.rpc = r; throw err;
+        },
+      };
+    }
+
+    function apply(ctx) {
+      const conn = ctx.get && ctx.get("connection");
+      const host = makeHost(async (channel, endpoint, payload) => {
+        if (conn && conn.rpc && typeof conn.rpc.call === "function") return conn.rpc.call(channel, endpoint, payload);
+        throw new Error("connection service unavailable");
+      });
+      
     const slots = ctx.get('slots');
     if (slots === undefined) return;
     const state = {
@@ -40,7 +76,7 @@ export default {
     function shortId(id){ return id&&id.length>14 ? id.slice(0,14)+'…' : (id||''); }
     function msgBlock(msg,key){ return React.createElement('div',{key:key,className:'h-pv'},React.createElement('span',{className:'h-pv-role'},roleLbl(msg.role)),React.createElement('div',{className:'h-pv-text'},msg.text||'')); }
     function grpLabel(key,label,msgs,pfx){ const nodes=[React.createElement('div',{key:key+'-label',className:'h-grp'},label)]; (msgs||[]).forEach(function(msg,mi){ nodes.push(msgBlock(msg,key+'-'+pfx+mi)); }); return nodes; }
-    function chatRow(c,key){ const id=c.id; const copied=state.copiedKey===key; const open=!!state.chatOpen[id]; const head=React.createElement('div',{key:key+'-head',className:'h-c4',onClick:function(){ toggleChat(id,key); }}, React.createElement('span',{className:'h-c4-edge'},open?'▾':'▸'), React.createElement('div',{className:'h-c4-col nm'},c.name||'(unnamed)'), React.createElement('div',{className:'h-c4-col'},c.source||'-'), React.createElement('div',{className:'h-c4-col id'},shortId(id)), React.createElement('button',{className:'h-btn',onClick:function(e){e.stopPropagation();copyStr(id,key);}},copied?'已复制':'复制地址')); const nodes=[head]; if(open){ const pv=state.chatPreview[id]; if(pv===null||pv===undefined){ nodes.push(React.createElement('div',{key:key+'-loading',className:'h-pv'},'加载…')); } else { const op=(pv.opening||[]).filter(function(m){return roleOn(m.role);}); const lt=(pv.latest||[]).filter(function(m){return roleOn(m.role);}); if(op.length){ grpLabel(key+'-o','▶ 开场',op,'o').forEach(function(n){ nodes.push(n); }); } if(lt.length){ grpLabel(key+'-l','▶ 最新',lt,'l').forEach(function(n){ nodes.push(n); }); } if(!op.length&&!lt.length){ nodes.push(React.createElement('div',{key:key+'-empty',className:'h-pv'},'（按类型筛选后无可显示消息）')); } } } return nodes;}
+    function chatRow(c,key){ const id=c.id; const copied=state.copiedKey===key; const open=!!state.chatOpen[id]; const head=React.createElement('div',{key:key+'-head',className:'h-c4',onClick:function(){ toggleChat(id,key); }}, React.createElement('span',{className:'h-c4-edge'},open?'▾':'▸'), React.createElement('div',{className:'h-c4-col nm'},c.name||'(unnamed)'), React.createElement('div',{className:'h-c4-col'},c.source||'-'), React.createElement('div',{className:'h-c4-col id'},shortId(id)), React.createElement('button',{type:'button',className:'h-btn',onClick:function(e){e.stopPropagation();copyStr(id,key);}},copied?'已复制':'复制地址')); const nodes=[head]; if(open){ const pv=state.chatPreview[id]; if(pv===null||pv===undefined){ nodes.push(React.createElement('div',{key:key+'-loading',className:'h-pv'},'加载…')); } else { const op=(pv.opening||[]).filter(function(m){return roleOn(m.role);}); const lt=(pv.latest||[]).filter(function(m){return roleOn(m.role);}); if(op.length){ grpLabel(key+'-o','▶ 开场',op,'o').forEach(function(n){ nodes.push(n); }); } if(lt.length){ grpLabel(key+'-l','▶ 最新',lt,'l').forEach(function(n){ nodes.push(n); }); } if(!op.length&&!lt.length){ nodes.push(React.createElement('div',{key:key+'-empty',className:'h-pv'},'（按类型筛选后无可显示消息）')); } } } return nodes;}
     function item(title,sub,key){ return React.createElement('div',{key:key,className:'h-item'},React.createElement('div',{className:'h-item-title'},title),sub?React.createElement('div',{className:'h-item-sub'},sub):null); }
     slots.inject('sidebar.footer.action', function(){
       return slots.register({ name:'sidebar.footer.action', id:'hermes-panel', order:200, label:function(){ return 'Hermes 资产'; } }, function(){
@@ -56,9 +92,9 @@ export default {
           React.createElement('span',{className:'h-drag'},'⋮⋮'),
           React.createElement('span',{className:'h-title'},'📁 Hermes 资产'),
           React.createElement('div',{className:'h-acts'},
-            React.createElement('button',{className:'h-tog',onClick:function(e){e.stopPropagation();toggleMode();}}, state.active?'主动':'被动'),
-            React.createElement('button',{onClick:function(e){e.stopPropagation();load();}},'🔄'),
-            React.createElement('button',{onClick:function(e){e.stopPropagation();state.open=false;notify();}},'✕')));
+            React.createElement('button',{type:'button',className:'h-tog',onClick:function(e){e.stopPropagation();toggleMode();}}, state.active?'主动':'被动'),
+            React.createElement('button',{type:'button',onClick:function(e){e.stopPropagation();load();}},'🔄'),
+            React.createElement('button',{type:'button',onClick:function(e){e.stopPropagation();state.open=false;notify();}},'✕')));
         function modeBanner(){ return React.createElement('div',{className:'h-mode'}, state.active?('模式：主动（技能'+state.selectedSkill.size+'/MCP'+state.selectedMCP.size+'）⚠️ 可能使提示词过长'):'模式：被动（缺工具时按需读取 Hermes 技能）'); }
         // settings row
         const settRow=React.createElement('div',{className:'h-sett',onMouseDown:function(e){e.stopPropagation();}},
@@ -106,7 +142,7 @@ export default {
                 React.createElement('div',{className:'h-item-row'},
                   React.createElement('input',{type:'checkbox',disabled:!state.active,checked:checked,onChange:function(){ if(checked)state.selectedSkill.delete(s.name);else state.selectedSkill.add(s.name); applyActive(); }}),
                   React.createElement('div',{className:'h-item-title'},s.name),
-                  React.createElement('button',{className:'h-btn',onClick:function(){ state.skillOpen=sexp?null:s.name; if(!sexp){ readSkillDetail(s.name).then(function(c){ state.detailCache[s.name]=c; forceRender(); }); } forceRender(); }},sexp?'收起':'详情')),
+                  React.createElement('button',{type:'button',className:'h-btn',onClick:function(){ state.skillOpen=sexp?null:s.name; if(!sexp){ readSkillDetail(s.name).then(function(c){ state.detailCache[s.name]=c; forceRender(); }); } forceRender(); }},sexp?'收起':'详情')),
                 React.createElement('div',{className:'h-item-sub'},s.description||'（无描述）'),
                 sexp?React.createElement('pre',{className:'h-pre'},(state.detailCache[s.name]||'').slice(0,2500)):null));
             });
@@ -118,7 +154,7 @@ export default {
               React.createElement('div',{className:'h-item-row'},
                 React.createElement('input',{type:'checkbox',disabled:!state.active,checked:ck,onChange:function(){ if(ck)state.selectedMCP.delete(m.name);else state.selectedMCP.add(m.name); applyActive(); }}),
                 React.createElement('div',{className:'h-item-title'},m.name),
-                React.createElement('button',{className:'h-btn',onClick:function(){ state.mcpOpen=mexp?null:m.name; if(!mexp){ readMcpDetail(m.name).then(function(c){ state.mcpDetailCache[m.name]=c; forceRender(); }); } forceRender(); }},mexp?'收起':'详情')),
+                React.createElement('button',{type:'button',className:'h-btn',onClick:function(){ state.mcpOpen=mexp?null:m.name; if(!mexp){ readMcpDetail(m.name).then(function(c){ state.mcpDetailCache[m.name]=c; forceRender(); }); } forceRender(); }},mexp?'收起':'详情')),
               mexp?React.createElement('pre',{className:'h-pre'},state.mcpDetailCache[m.name]||'加载…'):null));
           }); if(!mcp.length) right.push(React.createElement('p',{key:'mc0',className:'h-note'},'（无）')); }
           panel=React.createElement('aside',{className:'h-panel',style:styleBase,onClick:function(e){e.stopPropagation();}}, header,
@@ -133,5 +169,9 @@ export default {
       });
     });
     styles.insert(` .h-root{display:contents} .h-pill{position:fixed;left:14px;bottom:100px;z-index:90;box-sizing:border-box;height:44px;border-radius:22px;align-items:center;gap:8px;padding:0 16px 0 14px;margin:0;color:var(--dsw-alias-label-primary,#111);background:var(--dsw-alias-bg-base,#fff);border:1px solid var(--dsw-alias-border-l2,#ccc);box-shadow:var(--dsw-shadow-lv2,rgba(0,0,0,0.2));display:inline-flex;cursor:pointer;font-family:inherit;font-size:13px;font-weight:500} .h-pill:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(128,128,128,0.12))} .h-pill-lbl{overflow:hidden;text-overflow:ellipsis;white-space:nowrap} .h-pill-n{flex:none;background:var(--dsw-alias-button-ghost-active-fill,rgba(128,128,128,0.2));border-radius:10px;padding:0 6px;font-size:11px} .h-panel{position:fixed;z-index:89;border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary);max-width:calc(100vw - 20px);max-height:calc(100vh - 20px);box-shadow:var(--dsw-shadow-lv2);border-radius:12px;flex-direction:column;display:flex;overflow:hidden;font-size:13px;line-height:1.4;min-width:320px;min-height:260px} .h-head{box-sizing:border-box;border-bottom:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-base);flex:none;justify-content:space-between;align-items:center;min-height:38px;padding:4px 8px;display:flex;cursor:move} .h-drag{color:var(--dsw-alias-label-tertiary);cursor:move;margin-right:4px;opacity:0.7} .h-title{font-size:13px;font-weight:600;flex:1} .h-acts{display:flex;align-items:center;gap:6px} .h-acts button{background:transparent;border:none;cursor:pointer;font-size:12px;color:var(--dsw-alias-label-secondary)} .h-tog{background:var(--dsw-alias-button-ghost-active-fill,rgba(128,128,128,0.2))!important;border:1px solid var(--dsw-alias-border-l2)!important;border-radius:8px!important;padding:2px 10px!important;font-weight:600} .h-mode{margin:0 0 4px;padding:5px 8px;border:1px dashed var(--dsw-alias-border-l2);border-radius:8px;font-size:12px;color:var(--dsw-alias-label-secondary)} .h-sett{display:flex;align-items:center;gap:5px;flex-wrap:wrap;margin:2px 0;font-size:11px;color:var(--dsw-alias-label-secondary)} .h-sett-lbl{opacity:0.7} .h-sett-tip{opacity:0.75;color:var(--dsw-alias-label-tertiary);font-size:10.5px;margin-left:4px;display:inline-block;width:100%} .h-num{width:44px;background:var(--dsw-alias-bg-base);border:1px solid var(--dsw-alias-border-l2);border-radius:5px;color:var(--dsw-alias-label-primary);font-size:11px;padding:1px 3px} .h-src{display:inline-flex;align-items:center;gap:3px;font-size:10.5px;margin-right:4px;cursor:pointer} .h-src input{margin:0} .h-search{box-sizing:border-box;width:100%;padding:4px 8px;margin:2px 0;border-radius:8px;border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary);font-size:12px} .h-body{flex:1;min-height:0;padding:6px 10px 10px;overflow-y:auto} .h-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;min-height:100%} .h-col{display:flex;flex-direction:column} .h-sec{display:flex;align-items:center;gap:6px;margin:10px 0 6px;font-size:12px;font-weight:600;color:var(--dsw-alias-label-primary);cursor:pointer;user-select:none} .h-sec-arrow{flex:none;width:12px;font-size:11px;opacity:0.7} .h-sec-label{flex:1} .h-repo4{display:grid;grid-template-columns:16px 1fr auto;border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-base);border-radius:8px;padding:5px 8px;margin-bottom:5px;align-items:center} .h-r4-ch{cursor:pointer} .h-r4-name{font-weight:600;font-size:12.5px;cursor:pointer} .h-r4-num{font-size:11px;opacity:0.6;flex:none} .h-c4{display:grid;grid-template-columns:16px minmax(0,1.4fr) 0.7fr 1.2fr auto;gap:6px;align-items:center;padding:3px 2px 3px 8px;font-size:12px;cursor:pointer;border-bottom:1px solid var(--dsw-alias-border-l2)} .h-c4 .h-c4-col{overflow:hidden;text-overflow:ellipsis;white-space:nowrap} .h-c4 .nm{font-weight:500} .h-c4 .id{font-family:monospace;font-size:10.5px;opacity:0.6} .h-c4-edge{flex:none;font-size:11px;opacity:0.7} .h-grp{font-size:10.5px;font-weight:700;opacity:0.75;margin:4px 0 2px 24px;letter-spacing:0.5px} .h-pv{border:1px solid var(--dsw-alias-border-l2);border-radius:6px;margin:3px 0 5px 24px;padding:5px 7px;font-size:11.5px;color:var(--dsw-alias-label-secondary)} .h-pv-role{font-weight:600;margin-right:5px;display:inline-block;margin-bottom:2px} .h-pv-text{white-space:pre-wrap;word-break:break-word;display:-webkit-box;-webkit-line-clamp:4;-webkit-box-orient:vertical;overflow:hidden} .h-btn{background:transparent;border:1px solid var(--dsw-alias-border-l2);border-radius:6px;cursor:pointer;font-size:11px;padding:0 5px;flex:none;color:var(--dsw-alias-label-secondary)} .h-item{border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-base);border-radius:8px;padding:6px 8px;margin-bottom:5px} .h-item-row{display:flex;align-items:center;gap:6px} .h-item-title{flex:1;font-weight:500;font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap} .h-item-sub{font-size:11px;opacity:0.6;word-break:break-all;margin-top:1px} .h-item input{margin:0;flex:none} .h-pre{white-space:pre-wrap;word-break:break-word;margin:6px 0 0;font-size:11px;color:var(--dsw-alias-label-secondary)} .h-note{color:var(--dsw-alias-label-tertiary);font-size:12px;margin:2px 0} .h-note.err{color:var(--dsw-alias-state-error-primary)} .h-rz{position:absolute;width:26px;height:26px;z-index:5} .h-rz-ne{top:-9px;right:-9px;cursor:nesw-resize} .h-rz-se{bottom:-9px;right:-9px;cursor:nwse-resize} .h-rz-sw{bottom:-9px;left:-9px;cursor:nesw-resize} .h-rz-nw{top:-9px;left:-9px;cursor:nwse-resize} `);
+  
+    }
+    exports.apply = apply;
+    return module.exports;
   }
-};
+});

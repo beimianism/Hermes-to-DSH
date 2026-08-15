@@ -7,3 +7,5 @@ coverage/
 *.tsbuildinfo
 .idea/
 .vscode/
+# 旧动态面板参考实现(仅本地保留,不入库)
+client/index.full.js

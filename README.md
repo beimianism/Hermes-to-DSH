@@ -49,6 +49,14 @@ dsh plugin add github:beimianism/Hermes-to-DSH
 
 前置:本机 [Hermes](https://github.com/anthropics/hermes) 数据位于 `%LOCALAPPDATA%\hermes\state.db`(只读),且 `PATH` 里有 `python` 供辅助脚本使用。
 
+## 原生架构(跟随启动)
+
+插件是**原生 bundle + client**,随 `dsh web` 每次启动自动加载,无需动态插件/启动器:
+
+- **host 半**(`index.js`):注册 `ctx.connection.rpc.handle('/hermes', …, {authority:'trusted-host'})`,暴露 `inspect` / `chatPreview` / `mcpDetail` / `setMode` / `detail` 五个端点;`systemPrompt.section('hermes:mode')` 注入主动/被动提示词(若宿主未提供 `systemPrompt` 服务——如纯 web profile——注入段自动跳过,其余功能不受影响)。
+- **client 半**(`client/index.js`,由 `client/_make_native.cjs` 生成):`__ModuleLoader__.load` bundle,`require('react')`,`host.call` 适配为 `ctx.connection.rpc.call('/hermes', …)`,样式经 `<style>` 注入;面板挂 `sidebar.footer.action` slot。
+- 主动选择落盘 `hermes-active-selection.json` 并追加会话消息通知 agent。
+
 ## 使用
 
 1. 打开 DeepSeek Harness **web** UI。
@@ -67,7 +75,8 @@ Hermes-to-DSH/
 ├── package.json          # 清单(name, exports, dsh.bundle.patch, dsh.client)
 ├── cordis.patch.yml     # bundle 行,插入插件
 ├── index.js              # Node(host)半 —— Cordis 插件
-├── client/index.js       # Web client 半 —— 侧栏面板
+├── client/index.js       # Web client 半 —— 侧栏面板(已构建产物)
+├── client/_make_native.cjs  # client 生成器(仅开发用,源面板在工作区外)
 ├── scripts/              # 只读 python 辅助脚本
 │   ├── _hermes_scan.py       # 扫描 projects/repos/chats/skills/mcp
 │   ├── _chat_preview.py      # 开场 X + 最新 Y(消息类型自动补齐)
