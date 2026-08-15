@@ -25,7 +25,7 @@
 - **消息类型过滤**:只看 提问 `user` / 回答 `assistant` / 工具 `tool`;选定某类型后**自动补齐**到设定数量(跨越其他类型取足)。
 - **复制地址**:复制会话 id。
 - **MCP 详情**:勾选前先查看某服务的配置块。
-- **主动选择落盘**:写入 `hermes-active-selection.json` 并通知当前会话,让 agent 知道你的选择。
+- **主动选择落盘**:写入 `~/hermes-active-selection.json` 并通知当前会话,让 agent 知道你的选择。
 
 ## 能力面
 
@@ -55,7 +55,7 @@ dsh plugin add github:beimianism/Hermes-to-DSH
 
 - **host 半**(`index.js`):注册 `ctx.connection.rpc.handle('/hermes', …, {authority:'trusted-host'})`,暴露 `inspect` / `chatPreview` / `mcpDetail` / `setMode` / `detail` 五个端点;`systemPrompt.section('hermes:mode')` 注入主动/被动提示词(若宿主未提供 `systemPrompt` 服务——如纯 web profile——注入段自动跳过,其余功能不受影响)。
 - **client 半**(`client/index.js`,由 `client/_make_native.cjs` 生成):`__ModuleLoader__.load` bundle,`require('react')`,`host.call` 适配为 `ctx.connection.rpc.call('/hermes', …)`,样式经 `<style>` 注入;面板挂 `sidebar.footer.action` slot。
-- 主动选择落盘 `hermes-active-selection.json` 并追加会话消息通知 agent。
+- 主动选择落盘 `~/hermes-active-selection.json` 并追加会话消息通知 agent。
 
 ## 使用
 

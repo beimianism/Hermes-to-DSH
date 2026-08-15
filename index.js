@@ -97,7 +97,7 @@ export default {
     function buildSection() {
       if (mode.active) {
         const lines = [
-          '[hermes] 主动模式：用户已主动选择以下 Hermes 资产。请查看hermes-active-selection.json 获取所选清单（含 SKILL.md 全文与 MCP 配置）；按需直接使用。',
+          '[hermes] 主动模式：用户已主动选择以下 Hermes 资产。请查看用户主目录下的 hermes-active-selection.json 获取所选清单（含 SKILL.md 全文与 MCP 配置）；按需直接使用。',
           '⚠️ 提示：勾选过多/过大可能导致提示词过长，建议只勾真正要用的技能。'
         ];
         if (mode.skills.length) {
@@ -154,7 +154,7 @@ export default {
               type: 'text',
               text: '[Hermes面板] 用户已将注入切到主动，勾选技能=' + JSON.stringify(mode.skills) +
                 '，MCP=' + JSON.stringify(mode.mcp) +
-                '。请据此在上方可用技能/MCP中按需使用（全文见 SKILL.md，配置见hermes-active-selection.json）。'
+                '。请据此在上方可用技能/MCP中按需使用（全文见 SKILL.md，配置见用户主目录下的 hermes-active-selection.json）。'
             }],
           },
         }, {});

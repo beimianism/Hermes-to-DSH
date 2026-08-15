@@ -8,7 +8,15 @@
 const fs = require('fs');
 const path = require('path');
 
-const src = fs.readFileSync('hermes-chats/_hmpnl_big.js', 'utf8');
+// 源面板路径经 HMPNL_SRC 环境变量提供（源文件在工作区外，避免在仓库中
+// 硬编码本地路径）。用法：
+//   HMPNL_SRC=/path/to/_hmpnl_big.js node client/_make_native.cjs
+const srcPath = process.env.HMPNL_SRC;
+if (!srcPath) {
+  console.error('set HMPNL_SRC to the working panel source (e.g. HMPNL_SRC=/path/to/_hmpnl_big.js)');
+  process.exit(1);
+}
+const src = fs.readFileSync(srcPath, 'utf8');
 
 // Extract the apply(ctx){...} function body from `return { apply(ctx) { ... } };`
 const applyMatch = src.match(/apply\(ctx\)\s*\{([\s\S]*)\}\s*\r?\n\}\s*;\s*$/);

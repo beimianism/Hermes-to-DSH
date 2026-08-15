@@ -8,7 +8,7 @@ DSH (`dsh.bundle`) plugin that surfaces local **Hermes** assets — skills, MCP 
 - `cordis.patch.yml` — bundle row `insert` referencing `name: 'hermes-to-dsh'`.
 - `index.js` — Node (host) half; a Cordis plugin (`inject`, `apply`). Host RPC handlers: `inspect`, `chatPreview`, `mcpDetail`, `setMode`, `detail`. Registers the physical `/hermes` route via `ctx.connection.rpc.handle` (authority `trusted-host`).
 - `client/index.js` — Web client half; injects `sidebar.footer.action` panel. Talks to host via `host.call(...)` (adapted to `ctx.connection.rpc.call('/hermes', ...)`).
-- `client/_make_native.cjs` — dev-only generator that rebuilds `client/index.js` from a working panel source located **outside** this repo (`local path/hermes-chats/_hmpnl_big.js`); the committed `client/index.js` is the shipped artifact.
+- `client/_make_native.cjs` — dev-only generator that rebuilds `client/index.js` from a working panel source located **outside** this repo (path via the `HMPNL_SRC` env var); the committed `client/index.js` is the shipped artifact.
 - `scripts/` — read-only python helpers (`_hermes_scan.py`, `_chat_preview.py`, `_mcp_detail.py`).
 
 ## Build / release notes
