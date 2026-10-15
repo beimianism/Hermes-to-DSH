@@ -1,29 +1,75 @@
-// Hermes to DSH — Node (host) half.
-// A Cordis plugin that: scans local Hermes assets, serves chat previews,
-// exposes MCP details, and injects user-selected skills (SKILL.md) + MCP config
-// into the active agent's system prompt (active/passive mode).
-// Works both as a dynamic in-session plugin and as a native DSH bundle entry.
+// Hermes to DSH — mitad Node (host).
+// Plugin Cordis que: escanea los activos locales de Hermes, sirve vistas previas
+// de conversaciones, expone el detalle de MCP e inyecta las habilidades
+// seleccionadas por el usuario (SKILL.md) + la configuración MCP en el prompt de
+// sistema del agente activo (modo activo/pasivo).
+//
+// Transporte: monta una ruta HTTP propia `/hermes` con `ctx.webServer.register`
+// (el mecanismo vigente en DSH 0.2.0-rc.2). Los cinco endpoints (`inspect`,
+// `chatPreview`, `mcpDetail`, `setMode`, `detail`) hablan el mismo envelope
+// `{type:'server-response', rpcId, result:{ok,value}}` que consume
+// `ctx.connection.rpc.call` en el navegador, de modo que la interfaz del cliente
+// no cambia.
 
-const SCAN_PATH = new URL('./scripts/_hermes_scan.py', import.meta.url).pathname
-  .replace(/^\/([A-Za-z]:)/, '$1');
-const PREVIEW_PATH = new URL('./scripts/_chat_preview.py', import.meta.url).pathname
-  .replace(/^\/([A-Za-z]:)/, '$1');
-const MCP_DETAIL_PATH = new URL('./scripts/_mcp_detail.py', import.meta.url).pathname
-  .replace(/^\/([A-Za-z]:)/, '$1');
+import { execFile } from 'node:child_process';
+import { readFile, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const ROUTE_PATH = '/hermes';
+const SCAN_PATH = fileURLToPath(new URL('./scripts/_hermes_scan.py', import.meta.url));
+const PREVIEW_PATH = fileURLToPath(new URL('./scripts/_chat_preview.py', import.meta.url));
+const MCP_DETAIL_PATH = fileURLToPath(new URL('./scripts/_mcp_detail.py', import.meta.url));
 const WS = process.env.HERMES_WORKSPACE || (process.env.USERPROFILE || process.env.HOME);
-const SEL_FILE = WS + '/hermes-active-selection.json';
+const SEL_FILE = join(WS, 'hermes-active-selection.json');
 const SKILL_CAP = 5000;
 const TOTAL_CAP = 12000;
+const MAX_BODY_BYTES = 2_000_000;
+
+function runPython(args) {
+  return new Promise((resolve) => {
+    execFile('python', args, { cwd: WS, maxBuffer: 3_000_000, windowsHide: true }, (err, stdout) => {
+      if (err) { resolve('ERR:' + String((err && err.message) ? err.message : err)); return; }
+      resolve(String(stdout || ''));
+    });
+  });
+}
+
+function readJsonBody(req) {
+  return new Promise((resolve, reject) => {
+    let size = 0;
+    const chunks = [];
+    req.on('data', (c) => {
+      size += c.length;
+      if (size > MAX_BODY_BYTES) { reject(new Error('cuerpo de la petición demasiado grande')); req.destroy(); return; }
+      chunks.push(c);
+    });
+    req.on('end', () => {
+      try { resolve(JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}')); }
+      catch (e) { reject(new Error('JSON inválido en la petición')); }
+    });
+    req.on('error', reject);
+  });
+}
+
+function sendJson(res, status, body) {
+  const bytes = Buffer.from(JSON.stringify(body));
+  res.setHeader('Content-Type', 'application/json; charset=utf-8');
+  res.setHeader('Content-Length', String(bytes.length));
+  res.setHeader('Cache-Control', 'no-store');
+  res.writeHead(status);
+  res.end(bytes);
+}
 
 export default {
-  // ⚠️ 只声明原生 web profile 真实存在的服务——声明不存在的服务会让
-  // Cordis 永久等待、apply 永不执行（曾因声明 agents/sessions/systemPrompt 导致 404）。
-  inject: ['subprocess', 'shell', 'fs'],
+  // ⚠️ Declara solo servicios que existan realmente en este perfil: declarar
+  // servicios inexistentes hace que Cordis espere para siempre y apply nunca se
+  // ejecute (era la causa de que /hermes no llegara a montarse). Los scripts de
+  // Hermes se ejecutan con node:child_process y los archivos se leen con
+  // node:fs/promises, así que no dependemos de subprocess/shell/fs.
+  inject: ['webServer'],
   name: 'hermes-to-dsh',
   apply(ctx) {
-    const sub = ctx.get('subprocess');
-    const sh = ctx.get('shell');
-    const fsService = ctx.get('fs');
     const sp = ctx.get('systemPrompt');
     const ag = ctx.get('agents');
     const ses = ctx.get('sessions');
@@ -31,43 +77,20 @@ export default {
     let scanCache = null;
     const mode = { active:false, skills:[], mcp:[], skillTexts:{}, mcpTexts:{} };
 
-    async function runCmd(argv, cwd) {
-      if (sub && typeof sub.spawn === 'function') {
-        try {
-          const h = sub.spawn({
-            argv, cwd,
-            stdio: { stdin:'ignore', stdout:{ maxBytes: 3000000 }, stderr:{ maxBytes: 100000 } },
-            graceMs: 2000,
-          });
-          await h.done;
-          const rd = h.collected && h.collected.stdout ? h.collected.stdout.readFrom(0) : undefined;
-          return (rd && rd.text) || '';
-        } catch (e) { return 'ERR:' + String((e && e.message) ? e.message : e); }
-      }
-      if (sh && typeof sh.resolve === 'function') {
-        try {
-          const spec = sh.resolve({ command: argv.join(' '), timeoutMs: 30000, stdoutMaxBytes: 3000000 });
-          const res = await sh.run(spec);
-          return (res && res.stdout && res.stdout.text) || '';
-        } catch (e) { return 'ERR:' + String((e && e.message) ? e.message : e); }
-      }
-      return 'ERR:no-shell';
-    }
-
     async function runScan() {
-      const t = await runCmd(['python', SCAN_PATH], WS);
+      const t = await runPython([SCAN_PATH]);
       if (t.indexOf('ERR:') === 0) return { error: t };
       const line = t.trim().split(/\r?\n/).pop() || '';
-      try { return JSON.parse(line); } catch (e) { return { error: '解析失败' }; }
+      try { return JSON.parse(line); } catch (e) { return { error: 'error de análisis' }; }
     }
 
     async function chatPreview(id, openN, latestM, roles) {
       try {
         const rolesStr = Array.isArray(roles) ? roles.join(',') : (String(roles || ''));
-        const args = ['python', PREVIEW_PATH, String(id || ''),
+        const args = [PREVIEW_PATH, String(id || ''),
           String((openN == null) ? 2 : openN),
           String((latestM == null) ? 3 : latestM), rolesStr];
-        const t = await runCmd(args, WS);
+        const t = await runPython(args);
         const line = t.trim().split(/\r?\n/).pop() || '{}';
         try { const obj = JSON.parse(line); return { opening: obj.opening || [], latest: obj.latest || [] }; }
         catch (e) { return { opening: [], latest: [] }; }
@@ -78,16 +101,15 @@ export default {
       try {
         const s = (scanCache && scanCache.skills || []).find(x => x.name === name);
         const p = s && s.path;
-        if (!p || !fsService) return '';
-        const t = await fsService.resolve(p + '/SKILL.md');
-        const c = await fsService.readText(t);
+        if (!p) return '';
+        const c = await readFile(join(p, 'SKILL.md'), 'utf8');
         return c.length > SKILL_CAP ? c.slice(0, SKILL_CAP) : c;
       } catch (e) { return ''; }
     }
 
     async function readMcpDetail(name) {
       try {
-        const t = await runCmd(['python', MCP_DETAIL_PATH, String(name || '')], WS);
+        const t = await runPython([MCP_DETAIL_PATH, String(name || '')]);
         const line = t.trim().split(/\r?\n/).pop() || '{}';
         try { const obj = JSON.parse(line); return (obj && obj.detail) ? obj.detail : ''; }
         catch (e) { return ''; }
@@ -97,43 +119,41 @@ export default {
     function buildSection() {
       if (mode.active) {
         const lines = [
-          '[hermes] 主动模式：用户已主动选择以下 Hermes 资产。请查看用户主目录下的 hermes-active-selection.json 获取所选清单（含 SKILL.md 全文与 MCP 配置）；按需直接使用。',
-          '⚠️ 提示：勾选过多/过大可能导致提示词过长，建议只勾真正要用的技能。'
+          '[hermes] Modo activo: el usuario ha seleccionado estos activos de Hermes. Consulta hermes-active-selection.json en el directorio personal del usuario para ver la lista seleccionada (incluye el texto completo de SKILL.md y la configuración MCP); úsalos directamente según los necesites.',
+          '⚠️ Aviso: marcar demasiados elementos o muy grandes puede alargar en exceso el prompt; se recomienda marcar solo las habilidades que realmente vayas a usar.'
         ];
         if (mode.skills.length) {
           for (let i = 0; i < mode.skills.length; i++) {
             const nm = mode.skills[i];
-            lines.push('\n## 技能: ' + nm);
-            lines.push(mode.skillTexts[nm] || '（内容未加载，见 SKILL.md）');
+            lines.push('\n## Habilidad: ' + nm);
+            lines.push(mode.skillTexts[nm] || '(contenido no cargado; ver SKILL.md)');
           }
         }
         if (mode.mcp.length) {
-          lines.push('\n## 已选 MCP 服务与配置:');
+          lines.push('\n## Servidores MCP seleccionados y su configuración:');
           for (let k = 0; k < mode.mcp.length; k++) {
             const mn = mode.mcp[k];
             lines.push('\n### ' + mn);
-            lines.push(mode.mcpTexts[mn] || '（配置未加载）');
+            lines.push(mode.mcpTexts[mn] || '(configuración no cargada)');
           }
         }
         return lines.join('\n');
       }
       const skills = (scanCache && scanCache.skills || []).length;
       const mcp = (scanCache && scanCache.mcp || []).length;
-      return '[hermes] 被动模式（接触式）：本机 Hermes 有 ' + skills + ' 个技能、' + mcp +
-        ' 个 MCP（侧栏「 Hermes 资产」面板可看全量清单与技能/MCP详情）。当你在当前任务缺少某个能力/工具时，' +
-        '先想起 Hermes 里可能有——点面板该技能/MCP的「详情」读其 SKILL.md/配置，或直接用 fs 读目录 ' +
-        (process.env.LOCALAPPDATA || '') + '\\hermes\\skills 按需取用；不要预先灌输全部技能。';
+      return '[hermes] Modo pasivo (por contacto): este equipo tiene ' + skills + ' habilidades y ' + mcp +
+        ' MCP en Hermes (el panel «Activos de Hermes» de la barra lateral muestra la lista completa y el detalle de habilidades/MCP). Cuando te falte alguna capacidad o herramienta para la tarea actual, ' +
+        'recuerda que puede estar en Hermes: en el panel, pulsa «detalle» en esa habilidad/MCP y lee su SKILL.md o configuración, o usa fs para leer el directorio ' +
+        (process.env.LOCALAPPDATA || '') + '\\hermes\\skills según lo necesites; no precargues todas las habilidades.';
     }
 
     async function writeSelection() {
       try {
-        if (!fsService) return false;
-        const t = await fsService.resolve(SEL_FILE);
-        await fsService.writeText(t, JSON.stringify({
+        await writeFile(SEL_FILE, JSON.stringify({
           at: new Date().toISOString(), active: mode.active,
           skills: mode.skills, mcp: mode.mcp,
           skillTexts: mode.skillTexts, mcpTexts: mode.mcpTexts,
-        }, null, 2));
+        }, null, 2), 'utf8');
         return true;
       } catch (e) { return false; }
     }
@@ -152,9 +172,9 @@ export default {
             source: { kind:'agent', sessionId: sid, cwd: (session.header && session.header.cwd) || WS },
             content: [{
               type: 'text',
-              text: '[Hermes面板] 用户已将注入切到主动，勾选技能=' + JSON.stringify(mode.skills) +
-                '，MCP=' + JSON.stringify(mode.mcp) +
-                '。请据此在上方可用技能/MCP中按需使用（全文见 SKILL.md，配置见用户主目录下的 hermes-active-selection.json）。'
+              text: '[Panel Hermes] El usuario ha cambiado la inyección a modo activo; habilidades marcadas=' + JSON.stringify(mode.skills) +
+                ', MCP=' + JSON.stringify(mode.mcp) +
+                '. Úsalas según las necesites entre las habilidades/MCP disponibles arriba (texto completo en SKILL.md; configuración en hermes-active-selection.json del directorio personal del usuario).'
             }],
           },
         }, {});
@@ -163,78 +183,97 @@ export default {
       } catch (e) { return false; }
     }
 
+    async function dispatch(method, a) {
+      if (method === 'inspect') {
+        const det = await runScan(); scanCache = det; return { detected: det };
+      }
+      if (method === 'chatPreview') {
+        return chatPreview(String(a.id || ''), a.openN, a.latestM, a.roles);
+      }
+      if (method === 'mcpDetail') {
+        return { detail: await readMcpDetail(String(a.id || '')) };
+      }
+      if (method === 'setMode') {
+        mode.active = !!a.active;
+        mode.skills = Array.isArray(a.skills) ? a.skills.map(String) : [];
+        mode.mcp = Array.isArray(a.mcp) ? a.mcp.map(String) : [];
+        const texts = {}; let budget = TOTAL_CAP;
+        if (mode.active) {
+          for (let j = 0; j < mode.skills.length && budget > 0; j++) {
+            const nm = mode.skills[j];
+            if (budget <= 0) { texts[nm] = '(se superó el límite total; texto completo no cargado)'; continue; }
+            const full = await readSkillText(nm);
+            texts[nm] = full.length > budget ? full.slice(0, budget) : full;
+            budget -= texts[nm].length;
+          }
+        }
+        mode.skillTexts = texts;
+        const mtexts = {};
+        if (mode.active) { for (let q = 0; q < mode.mcp.length; q++) mtexts[mode.mcp[q]] = await readMcpDetail(mode.mcp[q]); }
+        mode.mcpTexts = mtexts;
+        await writeSelection(); await notifyInSession();
+        return { ok: true, persisted: true };
+      }
+      if (method === 'detail') {
+        const id = a.id;
+        if (!id) return { content: '' };
+        const s = (scanCache && scanCache.skills || []).find(x => x.name === id);
+        const p = s && s.path;
+        if (!p) return { content: '' };
+        try { return { content: await readFile(join(p, 'SKILL.md'), 'utf8') }; }
+        catch (e) { return { content: '' }; }
+      }
+      const err = new Error('endpoint desconocido: ' + method);
+      err.code = 'bad-request';
+      throw err;
+    }
+
+    // Handler HTTP que habla el envelope de `ctx.connection.rpc.call`.
+    async function handler(req, res) {
+      let rpcId = '';
+      try {
+        if (req.method !== 'POST') {
+          res.setHeader('Allow', 'POST');
+          return sendJson(res, 405, {
+            type: 'server-response', rpcId,
+            result: { ok: false, error: { code: 'method-not-allowed', message: 'usa POST', details: {} } },
+          });
+        }
+        const body = await readJsonBody(req);
+        rpcId = typeof body.rpcId === 'string' ? body.rpcId : '';
+        let method = typeof body.method === 'string' ? body.method : '';
+        if (!method) {
+          const pathname = new URL(req.url || '/', 'http://localhost').pathname;
+          method = pathname.replace(/^\/hermes\/?/, '');
+        }
+        const payload = (body.payload && typeof body.payload === 'object') ? body.payload : {};
+        const value = await dispatch(method, payload);
+        return sendJson(res, 200, { type: 'server-response', rpcId, result: { ok: true, value } });
+      } catch (e) {
+        return sendJson(res, 200, {
+          type: 'server-response', rpcId,
+          result: { ok: false, error: { code: (e && e.code) || 'internal', message: String((e && e.message) ? e.message : e), details: {} } },
+        });
+      }
+    }
+
+    // Sección de prompt de sistema (activo/pasivo). Opcional: se omite si el
+    // host no ofrece el servicio systemPrompt.
     const sec = sp && typeof sp.section === 'function'
       ? sp.section({ name:'hermes:mode', order: 110, text: () => buildSection() }) : null;
     if (sec) ctx.on('dispose', () => { try { sec(); } catch (e) {} });
 
-    // ── RPC surface: native bundle contract via ctx.connection.rpc ─────────
-    // 用 handle() 注册独立物理路由 /hermes/* —— 它通过 owner.webServer.register
-    // 真实挂载路由,不依赖 interceptors map 的实例共享(intercept 曾因此 404)。
-    // client: ctx.connection.rpc.call('/hermes', 'inspect', payload)
-    const wireRpc = (connection) => {
-      if (!connection || !connection.rpc || typeof connection.rpc.handle !== 'function') {
-        return null;
-      }
-      const disposer = connection.rpc.handle('/hermes', async (endpoint, payload, _signal) => {
-        const method = typeof endpoint === 'string' ? endpoint : '';
-        const a = (payload && typeof payload === 'object') ? payload : {};
-        try {
-          let value;
-          if (method === 'inspect') {
-            const det = await runScan(); scanCache = det; value = { detected: det };
-          } else if (method === 'chatPreview') {
-            value = await chatPreview(String(a.id || ''), a.openN, a.latestM, a.roles);
-          } else if (method === 'mcpDetail') {
-            value = { detail: await readMcpDetail(String(a.id || '')) };
-          } else if (method === 'setMode') {
-            mode.active = !!a.active;
-            mode.skills = Array.isArray(a.skills) ? a.skills.map(String) : [];
-            mode.mcp = Array.isArray(a.mcp) ? a.mcp.map(String) : [];
-            const texts = {}; let budget = TOTAL_CAP;
-            if (mode.active) {
-              for (let j = 0; j < mode.skills.length && budget > 0; j++) {
-                const nm = mode.skills[j];
-                if (budget <= 0) { texts[nm] = '（已超总量上限，未加载全文）'; continue; }
-                const full = await readSkillText(nm);
-                texts[nm] = full.length > budget ? full.slice(0, budget) : full;
-                budget -= texts[nm].length;
-              }
-            }
-            mode.skillTexts = texts;
-            const mtexts = {};
-            if (mode.active) { for (let q = 0; q < mode.mcp.length; q++) mtexts[mode.mcp[q]] = await readMcpDetail(mode.mcp[q]); }
-            mode.mcpTexts = mtexts;
-            await writeSelection(); await notifyInSession();
-            value = { ok: true, persisted: true };
-          } else if (method === 'detail') {
-            const id = a.id;
-            if (!id || !fsService) value = { content: '' };
-            else {
-              const s = (scanCache && scanCache.skills || []).find(x => x.name === id);
-              const p = s && s.path;
-              if (!p) value = { content: '' };
-              else { const t = await fsService.resolve(p + '/SKILL.md'); value = { content: await fsService.readText(t) }; }
-            }
-          } else {
-            return { ok: false, error: { code: 'bad-request', message: 'unknown endpoint: ' + endpoint, details: {} } };
-          }
-          return { ok: true, value };
-        } catch (e) {
-          return { ok: false, error: { code: 'internal', message: String((e && e.message) ? e.message : e), details: {} } };
-        }
-      }, { authority: 'trusted-host' });
-      return disposer;
+    // ── Montaje de la ruta /hermes con el transporte vigente ───────────────
+    const mount = (webServer) => {
+      if (!webServer || typeof webServer.register !== 'function') return null;
+      const dispose = webServer.register({ kind: 'prefix', path: ROUTE_PATH, handler });
+      ctx.on('dispose', () => { try { const d = dispose && dispose(); if (d && typeof d.then === 'function') d.catch(() => {}); } catch (e) {} });
+      return dispose;
     };
-    // connection 服务是异步提供的：必须用嵌套 ctx.inject 等待其就绪，
-    // 并在回调里以属性访问（cctx.connection）——完全照抄 api-gateway 的写法。
-    if (ctx.inject && typeof ctx.inject === 'function') {
-      ctx.inject(['connection'], (cctx) => {
-        const d = wireRpc(cctx.connection);
-        if (d) ctx.on('dispose', () => { try { if (typeof d === 'function') d(); else d.then?.((dd) => dd?.()); } catch (e) {} });
-      });
-    } else {
-      const d = wireRpc(ctx.get('connection'));
-      if (d) ctx.on('dispose', () => { try { if (typeof d === 'function') d(); else d.then?.((dd) => dd?.()); } catch (e) {} });
+    const direct = ctx.get('webServer');
+    if (direct) mount(direct);
+    else if (typeof ctx.inject === 'function') {
+      ctx.inject(['webServer'], (webCtx) => { mount(webCtx.webServer); });
     }
   },
 };

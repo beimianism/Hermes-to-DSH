@@ -1,91 +1,90 @@
 <div align="center">
 
-**中文** · [English](README.en.md)
+[English](README.en.md) · **Español**
 
 # Hermes to DSH
 
-**在 DeepSeek Harness Web 侧栏里浏览本机 Hermes 的 技能 / MCP 服务 / 对话历史,并把选中的技能与 MCP 配置注入到当前 agent。**
+**Explora en la barra lateral de DeepSeek Harness Web las habilidades / servidores MCP / historial de conversaciones de la instancia local de Hermes, e inyecta en el agente actual las habilidades y la configuración MCP seleccionadas.**
 
 </div>
 
 ---
 
-**Hermes to DSH**(`hermes-to-dsh`) 是一个 DSH 插件(`dsh.bundle`),把本机 [Hermes](https://github.com/anthropics/hermes) 资产(技能、MCP 服务、对话历史)以可停靠、可缩放的侧栏面板呈现在 DeepSeek Harness Web UI 中,并提供两种注入模式:
+**Hermes to DSH** (`hermes-to-dsh`) es un plugin de DSH (`dsh.bundle`) que presenta los activos locales de [Hermes](https://github.com/anthropics/hermes) (habilidades, servidores MCP, historial de conversaciones) como una fila propia de la barra lateral en la interfaz web de DeepSeek Harness —junto a Plugins y Tareas de automatización— cuya página se abre en la columna central. Ofrece dos modos de inyección:
 
-- **主动** — 勾选你真正要用的技能/MCP;插件读取所选 `SKILL.md` + MCP 配置,注入到当前 agent 的系统提示词(含长度警示与总量上限)。
-- **被动** — 接触式提示;仅当某能力缺失时,agent 才按需读取技能 `SKILL.md` / MCP 配置。
+- **Activo** — marcas las habilidades/MCP que realmente vas a usar; el plugin lee los `SKILL.md` seleccionados + la configuración MCP y los inyecta en el prompt de sistema del agente actual (con aviso de longitud y límite total).
+- **Pasivo** — aviso por contacto; solo cuando falte alguna capacidad, el agente lee bajo demanda el `SKILL.md` de la habilidad o la configuración MCP.
 
-## 功能
+## Funciones
 
-- **固定、可拖动/缩放面板**,四角抓取手柄(26px 命中区)。
-- **两列布局**:左 = 仓库/项目 → 对话;右 = 技能 + MCP + 模式。
-- **全局搜索**:对话名/id、技能名/描述、MCP 服务名。
-- **对话预览**:点开任意对话看 `开场 X 条 + 最新 Y 条`(两侧条数可分别配置)。
-- **来源过滤**:按对话 `source`(desktop/cron/...)过滤。
-- **消息类型过滤**:只看 提问 `user` / 回答 `assistant` / 工具 `tool`;选定某类型后**自动补齐**到设定数量(跨越其他类型取足)。
-- **复制地址**:复制会话 id。
-- **MCP 详情**:勾选前先查看某服务的配置块。
-- **主动选择落盘**:写入 `~/hermes-active-selection.json` 并通知当前会话,让 agent 知道你的选择。
+- **Fila en la barra lateral**: icono outline y página completa en la columna central, con el mismo diseño que las páginas nativas de Plugins y Tareas.
+- **Búsqueda global**: nombre/id de conversación, nombre/descripción de habilidad, nombre de servidor MCP.
+- **Vista previa de conversación**: abre cualquier conversación para ver `inicio X + recientes Y` (el número de cada lado se configura por separado).
+- **Filtro por origen**: filtra por `source` de la conversación (desktop/cron/…).
+- **Filtro por tipo de mensaje**: ver solo pregunta `user` / respuesta `assistant` / herramienta `tool`; al elegir un tipo, se **autorrellena** hasta la cantidad fijada (tomando de otros tipos si hace falta).
+- **Copiar dirección**: copia el id de la sesión.
+- **Detalle de MCP**: consulta el bloque de configuración de un servidor antes de marcarlo.
+- **Persistencia de la selección activa**: escribe en `~/hermes-active-selection.json` y notifica a la sesión actual, para que el agente conozca tu selección.
 
-## 能力面
+## Superficies
 
-| 能力面 | 说明 |
+| Superficie | Descripción |
 |---|---|
-| **UI** | `sidebar.footer.action` 侧栏面板(pill 切换 固定/可缩放两列面板) |
-| **Host handlers** | `inspect`、`chatPreview`、`mcpDetail`、`setMode`、`detail` |
-| **注入** | `systemPrompt.section` `hermes:mode`(主动 → 所选 SKILL.md 全文 + MCP 配置;被动 → 接触式提示) |
+| **UI** | Fila propia en `sidebar.panellist` (order 5) y página en el slot `main` (clave `hermes`) |
+| **Handlers del host** | `inspect`, `chatPreview`, `mcpDetail`, `setMode`, `detail` |
+| **Inyección** | `systemPrompt.section` `hermes:mode` (activo → texto completo de los SKILL.md seleccionados + configuración MCP; pasivo → aviso por contacto) |
 
-## 安装
+## Instalación
 
 ```bash
-# bundle:进入 profile layer stack(重启 web 生效)
+# bundle: entra en la pila de capas del profile (surte efecto al reiniciar web)
 dsh plugin --profile web add github:beimianism/Hermes-to-DSH
 
-# 或 纯 Cordis:通过配置 HMR,零重启
+# o Cordis puro: vía HMR de configuración, sin reinicio
 dsh plugin add github:beimianism/Hermes-to-DSH
 ```
 
-> `@deepseek-ai/*` 与 `cordis` 公开依赖刻意不声明(由 profile 的 pnpm closure 注入)。
+> Las dependencias públicas `@deepseek-ai/*` y `cordis` se omiten a propósito (las inyecta el cierre de pnpm del profile).
 
-前置:本机 [Hermes](https://github.com/anthropics/hermes) 数据位于 `%LOCALAPPDATA%\hermes\state.db`(只读),且 `PATH` 里有 `python` 供辅助脚本使用。
+Requisitos: los datos de [Hermes](https://github.com/anthropics/hermes) locales en `%LOCALAPPDATA%\hermes\state.db` (solo lectura), y `python` disponible en el `PATH` para los scripts auxiliares.
 
-## 原生架构(跟随启动)
+## Arquitectura nativa (se carga al iniciar)
 
-插件是**原生 bundle + client**,随 `dsh web` 每次启动自动加载,无需动态插件/启动器:
+El plugin es un **bundle + client nativos**, que se cargan automáticamente cada vez que arranca `dsh web`, sin plugin dinámico ni lanzador:
 
-- **host 半**(`index.js`):注册 `ctx.connection.rpc.handle('/hermes', …, {authority:'trusted-host'})`,暴露 `inspect` / `chatPreview` / `mcpDetail` / `setMode` / `detail` 五个端点;`systemPrompt.section('hermes:mode')` 注入主动/被动提示词(若宿主未提供 `systemPrompt` 服务——如纯 web profile——注入段自动跳过,其余功能不受影响)。
-- **client 半**(`client/index.js`,由 `client/_make_native.cjs` 生成):`__ModuleLoader__.load` bundle,`require('react')`,`host.call` 适配为 `ctx.connection.rpc.call('/hermes', …)`,样式经 `<style>` 注入;面板挂 `sidebar.footer.action` slot。
-- 主动选择落盘 `~/hermes-active-selection.json` 并追加会话消息通知 agent。
+- **Mitad host** (`index.js`): registra `ctx.connection.rpc.handle('/hermes', …, {authority:'trusted-host'})` y expone cinco endpoints: `inspect` / `chatPreview` / `mcpDetail` / `setMode` / `detail`; `systemPrompt.section('hermes:mode')` inyecta el prompt de modo activo/pasivo (si el host no ofrece el servicio `systemPrompt` —como un profile puramente web— el segmento de inyección se omite solo y el resto de funciones no se ve afectado).
+- **Mitad client** (`client/index.js`, generado por `client/_make_native.cjs`): bundle de `__ModuleLoader__.load`, `require('react')`, `host.call` adaptado a `ctx.connection.rpc.call('/hermes', …)`, estilos inyectados vía `<style>`; registra una fila en el slot de lista `sidebar.panellist` (id `hermes`, order 5, entre las filas de Plugins y Tareas) y la página que abre en el slot con clave `main` bajo la misma clave.
+- La selección activa se guarda en `~/hermes-active-selection.json` y añade un mensaje a la sesión para notificar al agente.
 
-## 使用
+## Uso
 
-1. 打开 DeepSeek Harness **web** UI。
-2. 点击左下角 **`📁 Hermes 资产`** 胶囊,切换面板。
-3. 面板顶部:设置 开场/最新 条数、来源过滤、搜索、消息类型;标题栏切换 **主动/被动**。
-4. 主动模式下勾选需要的 技能 / MCP 服务 —— 面板会写入选择并通知会话。
+1. Abre la interfaz **web** de DeepSeek Harness.
+2. Pulsa la fila **`Activos de Hermes`** de la barra lateral (entre Plugins y Tareas) para abrir su página.
+3. En la parte superior de la página: ajusta los conteos de inicio/recientes, el filtro por origen, la búsqueda y el tipo de mensaje; en la cabecera cambia **activo/pasivo**.
+4. En modo activo, marca las habilidades / servidores MCP que necesites — la página escribirá la selección y notificará a la sesión.
 
-## 插件管理
+## Gestión del plugin
 
-在 **DSH 浏览器控制台 / 插件管理器** 中管理已启用插件。本 bundle 安装名为 `hermes-to-dsh`;卸载时从 profile layer stack 移除对应行并重启 web。
+Gestiona los plugins activos desde la **consola del navegador de DSH / el gestor de plugins**. Este bundle se instala con el nombre `hermes-to-dsh`; para desinstalarlo, elimina su línea de la pila de capas del profile y reinicia web.
 
-## 布局
+## Estructura
 
 ```
 Hermes-to-DSH/
-├── package.json          # 清单(name, exports, dsh.bundle.patch, dsh.client)
-├── cordis.patch.yml     # bundle 行,插入插件
-├── index.js              # Node(host)半 —— Cordis 插件
-├── client/index.js       # Web client 半 —— 侧栏面板(已构建产物)
-├── client/_make_native.cjs  # client 生成器(仅开发用,源面板在工作区外)
-├── scripts/              # 只读 python 辅助脚本
-│   ├── _hermes_scan.py       # 扫描 projects/repos/chats/skills/mcp
-│   ├── _chat_preview.py      # 开场 X + 最新 Y(消息类型自动补齐)
-│   └── _mcp_detail.py        # 读取某服务配置块
+├── package.json          # manifiesto (name, exports, dsh.bundle.patch, dsh.client)
+├── cordis.patch.yml     # fila del bundle, inserta el plugin
+├── index.js              # mitad Node (host) —— plugin Cordis
+├── client/index.js       # mitad client web —— panel lateral (artefacto ya compilado)
+├── client/_make_native.cjs  # generador del client (solo desarrollo; el panel fuente está fuera del workspace)
+├── scripts/              # scripts python de solo lectura
+│   ├── _hermes_scan.py       # escanea projects/repos/chats/skills/mcp
+│   ├── _chat_preview.py      # inicio X + recientes Y (autorrelleno por tipo de mensaje)
+│   └── _mcp_detail.py        # lee el bloque de configuración de un servidor
 ├── AGENTS.md
 ├── LICENSE (MIT)
 └── README / README.en
 ```
 
-## 许可证
+## Licencia
 
 [MIT](./LICENSE)
