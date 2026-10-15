@@ -5,7 +5,9 @@ window.__ModuleLoader__.load({
     var exports = module.exports;
     Object.defineProperty(exports, Symbol.toStringTag, { value: "Module" });
     const React = require("react");
-    const { useEffect, useReducer } = React;
+
+    /** Id shared by the sidebar row and the main page it opens. */
+    const PANEL_ID = "hermes";
 
     function injectCss(css) {
       try {
@@ -17,7 +19,7 @@ window.__ModuleLoader__.load({
     const styles = { insert: injectCss };
 
     // Native host RPC compat: host.call(method, args) -> /hermes channel route
-    // (host registers it via connection.rpc.handle with a physical route).
+    // (the host registers it with ctx.webServer.register).
     function makeHost(rpcCall) {
       return {
         call: async (method, args) => {
@@ -29,147 +31,415 @@ window.__ModuleLoader__.load({
       };
     }
 
+    /** Decorative sidebar glyph: the host's folder-open outline artwork at the size asked for. */
+    function HermesPanelIcon(props) {
+      const size = (props && props.size) || 16;
+      return React.createElement("svg", {
+        width: size, height: size, viewBox: "0 0 16 16", fill: "none",
+        xmlns: "http://www.w3.org/2000/svg", "aria-hidden": "true", strokeWidth: 1,
+      },
+        React.createElement("path", {
+          d: "M12.3994 13.5986H2.04956C1.49728 13.5986 1.04956 13.1509 1.04956 12.5986V3.40137C1.04956 2.84908 1.49728 2.40137 2.04956 2.40137H4.76632C5.01016 2.40137 5.24561 2.49046 5.42836 2.6519L6.94088 3.98799C7.12364 4.14943 7.35908 4.23852 7.60293 4.23852H12.3994C12.9517 4.23852 13.3994 4.68624 13.3994 5.23852V7.16991",
+          stroke: "currentColor",
+        }),
+        React.createElement("path", {
+          d: "M2.55911 7.93683C2.67584 7.49906 3.07229 7.19446 3.52536 7.19446H13.6491C14.3061 7.19446 14.7846 7.81725 14.6153 8.45209L13.4411 12.856C13.3244 13.2938 12.9279 13.5984 12.4748 13.5984H2.35113C1.69411 13.5984 1.21562 12.9756 1.38489 12.3407L2.55911 7.93683Z",
+          stroke: "currentColor",
+        }));
+    }
+
     function apply(ctx) {
       const conn = ctx.get && ctx.get("connection");
       const host = makeHost(async (channel, endpoint, payload) => {
         if (conn && conn.rpc && typeof conn.rpc.call === "function") return conn.rpc.call(channel, endpoint, payload);
         throw new Error("connection service unavailable");
       });
-      
-    const slots = ctx.get('slots');
-    if (slots === undefined) return;
-    const state = {
-      open:false, loading:false, error:null, data:null,
-      groupOpen:{}, chatOpen:{}, skillOpen:null, mcpOpen:null,
-      chatPreview:{}, detailCache:{}, mcpDetailCache:{},
-      collapsedSection:{}, selectedSkill:new Set(), selectedMCP:new Set(),
-      active:false, copiedKey:null,
-      search:'', sourceFilter:new Set(), roleFilter:new Set(), // 空=全部
-      openN:2, latestM:3,
-      pos:{left:14, top:null, width:780, height:660}, drag:null, resizeDir:null
-    };
-    const listeners = new Set();
-    function notify(){ listeners.forEach(function(fn){ fn(); }); }
-    function subscribe(fn){ listeners.add(fn); return function(){ listeners.delete(fn); }; }
-    async function load(){ state.loading=true; state.error=null; notify(); try{ const res=await host.call('inspect',{}); state.data=(res&&res.detected)?res.detected:(res||{}); const srcs={}; (res&&res.detected.chats||[]).forEach(function(c){ if(c.source) srcs[c.source]=true; }); if(!state.sourceFilter.size){ Object.keys(srcs).forEach(function(k){ state.sourceFilter.add(k); }); } }catch(e){ state.error=String((e&&e.message)?e.message:e); state.data=state.data||{}; } finally{ state.loading=false; notify(); } }
-    async function readSkillDetail(id){ try{ const res=await host.call('detail',{kind:'skill',id:id}); return res&&res.content?res.content:'（无内容）'; }catch(e){ return '读取失败:'+String((e&&e.message)?e.message:e); } }
-    async function readMcpDetail(name){ try{ const res=await host.call('mcpDetail',{id:name}); return res&&res.detail?res.detail:'（无详情）'; }catch(e){ return '读取失败:'+String((e&&e.message)?e.message:e); } }
-    function toggleSection(k){ state.collapsedSection[k]=!(state.collapsedSection[k]===true); forceRender(); }
-    var forceRender;
-    function copyStr(p,k){ try{ if(typeof copyText==='function'){ copyText(p); } else if(navigator&&navigator.clipboard){ navigator.clipboard.writeText(p).catch(function(){}); } }catch(e){} state.copiedKey=k; forceRender(); }
-    function collectRoles(){ if(!state.roleFilter.size) return []; const arr=[]; ['user','assistant','tool'].forEach(function(r){ if(state.roleFilter.has(r)) arr.push(r); }); return arr; }
-    async function toggleChat(id,key){ const was=!!state.chatOpen[id]; state.chatOpen[id]=!was; if(!was){ state.chatPreview[id]=null; forceRender(); try{ const r=await host.call('chatPreview',{id:id,openN:state.openN,latestM:state.latestM,roles:collectRoles()}); state.chatPreview[id]=(r||{}); }catch(e){ state.chatPreview[id]=null; } } forceRender(); }
-    function collectSelected(){ const sks=[]; state.selectedSkill.forEach(function(n){ sks.push(n); }); const mcs=[]; state.selectedMCP.forEach(function(n){ mcs.push(n); }); return {sks:sks, mcs:mcs}; }
-    function applyActive(){ const sel=collectSelected(); const useActive=(sel.sks.length||sel.mcs.length)?true:false; host.call('setMode',{active:useActive,skills:sel.sks,mcp:sel.mcs}).catch(function(){}); state.active=useActive; forceRender(); }
-    function toggleMode(){ const sel=collectSelected(); const next=!state.active; host.call('setMode',{active:next,skills:next?sel.sks:[],mcp:next?sel.mcs:[]}).catch(function(){}); state.active=next; forceRender(); }
-    function toggleSrc(k){ if(state.sourceFilter.has(k)){ state.sourceFilter.delete(k); } else { state.sourceFilter.add(k); } forceRender(); }
-    function roleOn(r){ return state.roleFilter.size===0 || state.roleFilter.has(r); }
-    function toggleRole(r){ if(state.roleFilter.has(r)){ state.roleFilter.delete(r); } else { state.roleFilter.add(r); } forceRender(); }
-    function srcList(){ return Object.keys(state.data?state.data.chats||{}:{}); }
-    function compSrcMap(){ const m={}; (state.data?state.data.chats||[]:[]).forEach(function(c){ if(!m[c.source]) m[c.source]=0; m[c.source]++; }); return m; }
-    // drag/resize
-    function startDrag(e){ e.preventDefault(); const sx=e.clientX, sy=e.clientY, px=state.pos.left, pt=state.pos.top; function mv(ev){ state.pos.left=px+(ev.clientX-sx); if(state.pos.top===null){ state.pos.top=(window.innerHeight?window.innerHeight/1.5:480); } state.pos.top=pt+(ev.clientY-sy); if(state.pos.left<0)state.pos.left=0; if(state.pos.top<0)state.pos.top=0; forceRender(); } function up(){ window.removeEventListener('mousemove',mv); window.removeEventListener('mouseup',up); } window.addEventListener('mousemove',mv); window.addEventListener('mouseup',up); }
-    function startResize(dir,e){ e.preventDefault(); e.stopPropagation(); const sx=e.clientX, sy=e.clientY, sw=state.pos.width, sh=state.pos.height; function mv(ev){ const dx=ev.clientX-sx, dy=ev.clientY-sy; if(dir.indexOf('E')>=0) state.pos.width=Math.max(360,sw+dx); if(dir.indexOf('S')>=0) state.pos.height=Math.max(320,sh+dy); if(dir.indexOf('N')>=0){ state.pos.height=Math.max(320,sh-dy); } if(dir.indexOf('W')>=0){ state.pos.left=Math.max(0,(state.pos.left||14)-dx); } forceRender(); } function up(){ window.removeEventListener('mousemove',mv); window.removeEventListener('mouseup',up); } window.addEventListener('mousemove',mv); window.addEventListener('mouseup',up); }
-    function Sec(p){ return React.createElement('div',{className:'h-sec',onClick:function(){p.onT();}}, React.createElement('span',{className:'h-sec-arrow'},p.open?'▾':'▸'), React.createElement('span',{className:'h-sec-label'},p.label)); }
-    function repoHead(title,key,open,onHead,count){ return React.createElement('div',{key:key,className:'h-repo4'}, React.createElement('div',{className:'h-r4-ch',onClick:onHead}, React.createElement('span',{className:'h-sec-arrow'},open?'▾':'▸')), React.createElement('div',{className:'h-r4-name',onClick:onHead},title), React.createElement('div',{className:'h-r4-num'},'对话'+count)); }
-    function roleLbl(r){ if(r==='user') return '🧑'; if(r==='assistant') return '🤖'; if(r==='tool') return '🔧'; return '·'; }
-    function shortId(id){ return id&&id.length>14 ? id.slice(0,14)+'…' : (id||''); }
-    function msgBlock(msg,key){ return React.createElement('div',{key:key,className:'h-pv'},React.createElement('span',{className:'h-pv-role'},roleLbl(msg.role)),React.createElement('div',{className:'h-pv-text'},msg.text||'')); }
-    function grpLabel(key,label,msgs,pfx){ const nodes=[React.createElement('div',{key:key+'-label',className:'h-grp'},label)]; (msgs||[]).forEach(function(msg,mi){ nodes.push(msgBlock(msg,key+'-'+pfx+mi)); }); return nodes; }
-    function chatRow(c,key){ const id=c.id; const copied=state.copiedKey===key; const open=!!state.chatOpen[id]; const head=React.createElement('div',{key:key+'-head',className:'h-c4',onClick:function(){ toggleChat(id,key); }}, React.createElement('span',{className:'h-c4-edge'},open?'▾':'▸'), React.createElement('div',{className:'h-c4-col nm'},c.name||'(unnamed)'), React.createElement('div',{className:'h-c4-col'},c.source||'-'), React.createElement('div',{className:'h-c4-col id'},shortId(id)), React.createElement('button',{type:'button',className:'h-btn',onClick:function(e){e.stopPropagation();copyStr(id,key);}},copied?'已复制':'复制地址')); const nodes=[head]; if(open){ const pv=state.chatPreview[id]; if(pv===null||pv===undefined){ nodes.push(React.createElement('div',{key:key+'-loading',className:'h-pv'},'加载…')); } else { const op=(pv.opening||[]).filter(function(m){return roleOn(m.role);}); const lt=(pv.latest||[]).filter(function(m){return roleOn(m.role);}); if(op.length){ grpLabel(key+'-o','▶ 开场',op,'o').forEach(function(n){ nodes.push(n); }); } if(lt.length){ grpLabel(key+'-l','▶ 最新',lt,'l').forEach(function(n){ nodes.push(n); }); } if(!op.length&&!lt.length){ nodes.push(React.createElement('div',{key:key+'-empty',className:'h-pv'},'（按类型筛选后无可显示消息）')); } } } return nodes;}
-    function item(title,sub,key){ return React.createElement('div',{key:key,className:'h-item'},React.createElement('div',{className:'h-item-title'},title),sub?React.createElement('div',{className:'h-item-sub'},sub):null); }
-    slots.inject('sidebar.footer.action', function(){
-      return slots.register({ name:'sidebar.footer.action', id:'hermes-panel', order:200, label:function(){ return 'Hermes 资产'; } }, function(){
-        const [,force]=React.useReducer(function(x){return x+1;},0); forceRender=force;
-        React.useEffect(function(){ return subscribe(force); },[]);
-        function toggle(e){ if(e)e.stopPropagation(); if(!state.data&&!state.loading) load(); state.open=!state.open; notify(); }
-        const d=state.data||{}; const projects=d.projects||[], repos=d.repos||[];
-        let chats=(d.chats||[]).slice(); let skills=(d.skills||[]).slice(); let mcp=(d.mcp||[]).slice();
-        if(state.search){ const q=state.search.toLowerCase(); chats=chats.filter(function(c){ return (c.name||'').toLowerCase().indexOf(q)>=0 || (c.id||'').toLowerCase().indexOf(q)>=0; }); skills=skills.filter(function(s){ return (s.name||'').toLowerCase().indexOf(q)>=0 || (s.description||'').toLowerCase().indexOf(q)>=0; }); mcp=mcp.filter(function(m){ return (m.name||'').toLowerCase().indexOf(q)>=0; }); }
-        chats=chats.filter(function(c){ return state.sourceFilter.has(c.source); });
-        const srcCount=compSrcMap();
-        const header=React.createElement('header',{className:'h-head',onMouseDown:startDrag},
-          React.createElement('span',{className:'h-drag'},'⋮⋮'),
-          React.createElement('span',{className:'h-title'},'📁 Hermes 资产'),
-          React.createElement('div',{className:'h-acts'},
-            React.createElement('button',{type:'button',className:'h-tog',onClick:function(e){e.stopPropagation();toggleMode();}}, state.active?'主动':'被动'),
-            React.createElement('button',{type:'button',onClick:function(e){e.stopPropagation();load();}},'🔄'),
-            React.createElement('button',{type:'button',onClick:function(e){e.stopPropagation();state.open=false;notify();}},'✕')));
-        function modeBanner(){ return React.createElement('div',{className:'h-mode'}, state.active?('模式：主动（技能'+state.selectedSkill.size+'/MCP'+state.selectedMCP.size+'）⚠️ 可能使提示词过长'):'模式：被动（缺工具时按需读取 Hermes 技能）'); }
-        // settings row
-        const settRow=React.createElement('div',{className:'h-sett',onMouseDown:function(e){e.stopPropagation();}},
-          React.createElement('span',{className:'h-sett-lbl'},'开场'),
-          React.createElement('input',{className:'h-num',type:'number',min:0,value:state.openN,onChange:function(e){ state.openN=Math.max(0,parseInt(e.target.value)||0); forceRender(); }}),
-          React.createElement('span',{className:'h-sett-lbl'},'最新'),
-          React.createElement('input',{className:'h-num',type:'number',min:0,value:state.latestM,onChange:function(e){ state.latestM=Math.max(0,parseInt(e.target.value)||0); forceRender(); }}),
-          React.createElement('span',{className:'h-sett-lbl'},'来源:'),
-          Object.keys(srcCount).map(function(k){ const on=state.sourceFilter.has(k); return React.createElement('label',{key:k,className:'h-src'},React.createElement('input',{type:'checkbox',checked:on,onChange:function(){ toggleSrc(k); }}),k+'('+srcCount[k]+')'); }));
-        const roleRow=React.createElement('div',{className:'h-sett',onMouseDown:function(e){e.stopPropagation();}},
-          React.createElement('span',{className:'h-sett-lbl'},'类型:'),
-          React.createElement('label',{className:'h-src'},React.createElement('input',{type:'checkbox',checked:roleOn('user'),onChange:function(){ toggleRole('user'); }}),'🧑提问'),
-          React.createElement('label',{className:'h-src'},React.createElement('input',{type:'checkbox',checked:roleOn('assistant'),onChange:function(){ toggleRole('assistant'); }}),'🤖回答'),
-          React.createElement('label',{className:'h-src'},React.createElement('input',{type:'checkbox',checked:roleOn('tool'),onChange:function(){ toggleRole('tool'); }}),'🔧工具'),
-          state.roleFilter.size?React.createElement('span',{className:'h-sett-tip'},'💡 选择后，重新点开对话即按所选类型自动补齐'):null);
-        const searchRow=React.createElement('input',{className:'h-search',placeholder:'🔍 搜索对话/技能/MCP…',value:state.search,onChange:function(e){ state.search=e.target.value; forceRender(); }});
-        const styleBase={left:(state.pos.left||14)+'px', width:(state.pos.width||780)+'px'}; if(state.pos.top!==null) styleBase.top=state.pos.top+'px'; else styleBase.bottom='160px'; if(state.pos.height) styleBase.height=state.pos.height+'px';
-        let panel=null;
-        if(state.open){
-          const left=[]; const right=[];
-          if(state.error) left.push(React.createElement('p',{key:'e',className:'h-note err'},'错误：'+state.error));
-          if(state.loading) left.push(React.createElement('p',{key:'b',className:'h-note'},'扫描中…'));
-          left.push(settRow); left.push(roleRow); left.push(searchRow);
-          left.push(React.createElement(Sec,{key:'pr',label:'📁 项目与仓库 · 含对话',open:!state.collapsedSection['pr'],onT:function(){toggleSection('pr');}}));
-          if(!state.collapsedSection['pr']){
-            const groups=[];
-            projects.forEach(function(p){ const cs=chats.filter(function(c2){return c2.repo&&p.primary_path&&c2.repo===p.primary_path;}); if(cs.length) groups.push({title:p.name,chats:cs}); });
-            repos.forEach(function(r){ const cs=chats.filter(function(c2){return c2.repo&&r.root&&c2.repo===r.root;}); if(cs.length) groups.push({title:r.label,chats:cs}); });
-            const none=chats.filter(function(c2){return !c2.repo;});
-            if(none.length) groups.push({title:'（未归属会话）',chats:none});
-            groups.forEach(function(g,gi){
-              const gkey='g'+gi;
-              const gopen=!!state.groupOpen[gkey];
-              left.push(repoHead(g.title,gkey,gopen,function(){ state.groupOpen[gkey]=!gopen; forceRender(); },g.chats.length));
-              if(gopen){ g.chats.slice(0,40).forEach(function(c,ci){ var rows=chatRow(c,'c'+gi+'-'+ci); for(var q=0;q<rows.length;q++){ left.push(rows[q]); } }); }
-            });
-            if(!groups.length) left.push(React.createElement('p',{key:'pr0',className:'h-note'},'（无含对话的仓库/项目，或无匹配）'));
-          }
-          right.push(modeBanner());
-          right.push(React.createElement(Sec,{key:'sk',label:'🛠 技能（'+skills.length+'）',open:!state.collapsedSection['sk'],onT:function(){toggleSection('sk');}}));
-          if(!state.collapsedSection['sk']){
-            skills.slice(0,50).forEach(function(s,i){
-              const checked=state.selectedSkill.has(s.name); const sexp=state.skillOpen===s.name;
-              right.push(React.createElement('div',{key:'sk'+i,className:'h-item'},
-                React.createElement('div',{className:'h-item-row'},
-                  React.createElement('input',{type:'checkbox',disabled:!state.active,checked:checked,onChange:function(){ if(checked)state.selectedSkill.delete(s.name);else state.selectedSkill.add(s.name); applyActive(); }}),
-                  React.createElement('div',{className:'h-item-title'},s.name),
-                  React.createElement('button',{type:'button',className:'h-btn',onClick:function(){ state.skillOpen=sexp?null:s.name; if(!sexp){ readSkillDetail(s.name).then(function(c){ state.detailCache[s.name]=c; forceRender(); }); } forceRender(); }},sexp?'收起':'详情')),
-                React.createElement('div',{className:'h-item-sub'},s.description||'（无描述）'),
-                sexp?React.createElement('pre',{className:'h-pre'},(state.detailCache[s.name]||'').slice(0,2500)):null));
-            });
-            if(!skills.length) right.push(React.createElement('p',{key:'sk0',className:'h-note'},'（无）'));
-          }
-          right.push(React.createElement(Sec,{key:'mc',label:'🔌 MCP 服务（'+mcp.length+'）·勾选注入/详情',open:!state.collapsedSection['mc'],onT:function(){toggleSection('mc');}}));
-          if(!state.collapsedSection['mc']){ mcp.forEach(function(m,i){ const ck=state.selectedMCP.has(m.name); const mexp=state.mcpOpen===m.name;
-            right.push(React.createElement('div',{key:'mc'+i,className:'h-item'},
-              React.createElement('div',{className:'h-item-row'},
-                React.createElement('input',{type:'checkbox',disabled:!state.active,checked:ck,onChange:function(){ if(ck)state.selectedMCP.delete(m.name);else state.selectedMCP.add(m.name); applyActive(); }}),
-                React.createElement('div',{className:'h-item-title'},m.name),
-                React.createElement('button',{type:'button',className:'h-btn',onClick:function(){ state.mcpOpen=mexp?null:m.name; if(!mexp){ readMcpDetail(m.name).then(function(c){ state.mcpDetailCache[m.name]=c; forceRender(); }); } forceRender(); }},mexp?'收起':'详情')),
-              mexp?React.createElement('pre',{className:'h-pre'},state.mcpDetailCache[m.name]||'加载…'):null));
-          }); if(!mcp.length) right.push(React.createElement('p',{key:'mc0',className:'h-note'},'（无）')); }
-          panel=React.createElement('aside',{className:'h-panel',style:styleBase,onClick:function(e){e.stopPropagation();}}, header,
-            React.createElement('div',{className:'h-body'}, React.createElement('div',{className:'h-grid'}, React.createElement('div',{className:'h-col'},left), React.createElement('div',{className:'h-col'},right))),
-            React.createElement('div',{className:'h-rz h-rz-ne',onMouseDown:function(e){startResize('NE',e);}}),
-            React.createElement('div',{className:'h-rz h-rz-se',onMouseDown:function(e){startResize('SE',e);}}),
-            React.createElement('div',{className:'h-rz h-rz-sw',onMouseDown:function(e){startResize('SW',e);}}),
-            React.createElement('div',{className:'h-rz h-rz-nw',onMouseDown:function(e){startResize('NW',e);}}));
+
+      const slots = ctx.get("slots");
+      if (slots === undefined) return;
+
+      const state = {
+        loading: false, error: null, data: null, loaded: false,
+        groupOpen: {}, chatOpen: {}, skillOpen: null, mcpOpen: null,
+        chatPreview: {}, detailCache: {}, mcpDetailCache: {},
+        selectedSkill: new Set(), selectedMCP: new Set(),
+        active: false, copiedKey: null,
+        search: "", sourceFilter: new Set(), roleFilter: new Set(), // vacío = todos
+        openN: 2, latestM: 3,
+      };
+      const listeners = new Set();
+      function notify() { listeners.forEach(function (fn) { fn(); }); }
+      function subscribe(fn) { listeners.add(fn); return function () { listeners.delete(fn); }; }
+      var forceRender;
+
+      async function load() {
+        state.loading = true; state.error = null; notify();
+        try {
+          const res = await host.call("inspect", {});
+          state.data = (res && res.detected) ? res.detected : (res || {});
+          state.loaded = true;
+          const srcs = {};
+          (res && res.detected && res.detected.chats || []).forEach(function (c) { if (c.source) srcs[c.source] = true; });
+          if (!state.sourceFilter.size) { Object.keys(srcs).forEach(function (k) { state.sourceFilter.add(k); }); }
+        } catch (e) {
+          state.error = String((e && e.message) ? e.message : e);
+          state.data = state.data || {};
+        } finally { state.loading = false; notify(); }
+      }
+      async function readSkillDetail(id) {
+        try { const res = await host.call("detail", { kind: "skill", id: id }); return res && res.content ? res.content : "(sin contenido)"; }
+        catch (e) { return "error de lectura: " + String((e && e.message) ? e.message : e); }
+      }
+      async function readMcpDetail(name) {
+        try { const res = await host.call("mcpDetail", { id: name }); return res && res.detail ? res.detail : "(sin detalle)"; }
+        catch (e) { return "error de lectura: " + String((e && e.message) ? e.message : e); }
+      }
+      function copyStr(p, k) {
+        try {
+          if (navigator && navigator.clipboard) navigator.clipboard.writeText(p).catch(function () {});
+        } catch (e) {}
+        state.copiedKey = k; notify();
+      }
+      function collectRoles() {
+        if (!state.roleFilter.size) return [];
+        const arr = [];
+        ["user", "assistant", "tool"].forEach(function (r) { if (state.roleFilter.has(r)) arr.push(r); });
+        return arr;
+      }
+      async function toggleChat(id, key) {
+        const was = !!state.chatOpen[id];
+        state.chatOpen[id] = !was;
+        if (!was) {
+          state.chatPreview[id] = null; notify();
+          try { const r = await host.call("chatPreview", { id: id, openN: state.openN, latestM: state.latestM, roles: collectRoles() }); state.chatPreview[id] = (r || {}); }
+          catch (e) { state.chatPreview[id] = null; }
         }
-        var pill=React.createElement('button',{type:'button',className:'h-pill',title:'Hermes 资产',onClick:toggle}, React.createElement('span',{className:'h-pill-lbl'},'📁 Hermes 资产'), React.createElement('span',{className:'h-pill-n'},state.active?'✓':'·'));
-        return React.createElement('div',{className:'h-root'}, panel, pill);
+        notify();
+      }
+      function collectSelected() {
+        const sks = []; state.selectedSkill.forEach(function (n) { sks.push(n); });
+        const mcs = []; state.selectedMCP.forEach(function (n) { mcs.push(n); });
+        return { sks: sks, mcs: mcs };
+      }
+      function applyActive() {
+        const sel = collectSelected();
+        const useActive = (sel.sks.length || sel.mcs.length) ? true : false;
+        host.call("setMode", { active: useActive, skills: sel.sks, mcp: sel.mcs }).catch(function () {});
+        state.active = useActive; notify();
+      }
+      function toggleMode() {
+        const sel = collectSelected();
+        const next = !state.active;
+        host.call("setMode", { active: next, skills: next ? sel.sks : [], mcp: next ? sel.mcs : [] }).catch(function () {});
+        state.active = next; notify();
+      }
+      function toggleSet(set, k) { if (set.has(k)) set.delete(k); else set.add(k); notify(); }
+      function roleOn(r) { return state.roleFilter.size === 0 || state.roleFilter.has(r); }
+      function compSrcMap() {
+        const m = {};
+        (state.data ? state.data.chats || [] : []).forEach(function (c) { if (!m[c.source]) m[c.source] = 0; m[c.source]++; });
+        return m;
+      }
+      function roleLbl(r) { if (r === "user") return "usuario"; if (r === "assistant") return "asistente"; if (r === "tool") return "herramienta"; return "·"; }
+      function shortId(id) { return id && id.length > 14 ? id.slice(0, 14) + "…" : (id || ""); }
+
+      const h = React.createElement;
+
+      /** Disclosure chevron matching the host's row glyphs; rotates when open. */
+      function Chevron(open) {
+        return h("svg", {
+          width: 16, height: 16, viewBox: "0 0 16 16", fill: "none",
+          xmlns: "http://www.w3.org/2000/svg", "aria-hidden": "true",
+          strokeWidth: 1, className: open ? "h-chev h-chevOpen" : "h-chev",
+        },
+          h("path", { d: "M6 3.5L10.5 8L6 12.5", stroke: "currentColor" }));
+      }
+
+      function chatRow(c, key) {
+        const id = c.id;
+        const copied = state.copiedKey === key;
+        const open = !!state.chatOpen[id];
+        const head = h("div", { key: key + "-head", className: "h-row" },
+          h("button", {
+            type: "button", className: "h-rowMain", "aria-expanded": open, onClick: function () { toggleChat(id, key); },
+          },
+            h("span", { className: "h-rowGlyph" }, Chevron(open)),
+            h("span", { className: "h-rowContent" },
+              h("span", { className: "h-rowTitle" }, c.name || "(sin nombre)"),
+              h("span", { className: "h-rowSummary" },
+                h("span", { className: "h-meta" }, c.source || "-"),
+                h("span", { className: "h-meta" }, shortId(id))))),
+          h("span", { className: "h-rowEnd" },
+            h("button", {
+              type: "button", className: "h-iconBtn", title: "copiar id",
+              onClick: function () { copyStr(id, key); },
+            }, copied ? "copiado" : "id")));
+        const nodes = [head];
+        if (open) {
+          const pv = state.chatPreview[id];
+          if (pv === null || pv === undefined) nodes.push(h("p", { key: key + "-loading", className: "h-note" }, "cargando…"));
+          else {
+            const op = (pv.opening || []).filter(function (m) { return roleOn(m.role); });
+            const lt = (pv.latest || []).filter(function (m) { return roleOn(m.role); });
+            if (op.length) { nodes.push(h("p", { key: key + "-ol", className: "h-grp" }, "inicio")); op.forEach(function (m, mi) { nodes.push(h("p", { key: key + "-o" + mi, className: "h-pv" }, h("span", { className: "h-pvRole" }, roleLbl(m.role)), m.text || "")); }); }
+            if (lt.length) { nodes.push(h("p", { key: key + "-ll", className: "h-grp" }, "recientes")); lt.forEach(function (m, mi) { nodes.push(h("p", { key: key + "-l" + mi, className: "h-pv" }, h("span", { className: "h-pvRole" }, roleLbl(m.role)), m.text || "")); }); }
+            if (!op.length && !lt.length) nodes.push(h("p", { key: key + "-empty", className: "h-note" }, "(no hay mensajes que mostrar tras el filtro)"));
+          }
+        }
+        return h("div", { key: key + "-wrap", className: "h-chatWrap" }, nodes);
+      }
+
+      function HermesPage() {
+        const [, force] = React.useReducer(function (x) { return x + 1; }, 0);
+        forceRender = force;
+        React.useEffect(function () { return subscribe(force); }, []);
+        React.useEffect(function () { if (!state.loaded && !state.loading) load(); }, []);
+
+        const d = state.data || {};
+        const projects = d.projects || [], repos = d.repos || [];
+        let chats = (d.chats || []).slice();
+        let skills = (d.skills || []).slice();
+        let mcp = (d.mcp || []).slice();
+        if (state.search) {
+          const q = state.search.toLowerCase();
+          chats = chats.filter(function (c) { return (c.name || "").toLowerCase().indexOf(q) >= 0 || (c.id || "").toLowerCase().indexOf(q) >= 0; });
+          skills = skills.filter(function (s) { return (s.name || "").toLowerCase().indexOf(q) >= 0 || (s.description || "").toLowerCase().indexOf(q) >= 0; });
+          mcp = mcp.filter(function (m) { return (m.name || "").toLowerCase().indexOf(q) >= 0; });
+        }
+        chats = chats.filter(function (c) { return state.sourceFilter.has(c.source); });
+        const srcCount = compSrcMap();
+
+        const head = h("header", { className: "h-pageHead" },
+          h("div", { className: "h-headBlock" },
+            h("h1", { className: "h-pageTitle" }, "Activos de Hermes"),
+            h("p", { className: "h-pageIntro" },
+              String(skills.length) + " habilidades · " + String(mcp.length) + " MCP · " + String(chats.length) + " conversaciones")),
+          h("div", { className: "h-toolbar" },
+            h("button", {
+              type: "button", className: "h-modeBtn", title: "Modo de inyección de habilidades/MCP",
+              onClick: toggleMode,
+            }, state.active ? "Activo" : "Pasivo"),
+            h("button", { type: "button", className: "h-iconBtn", title: "Volver a analizar", onClick: function () { load(); } }, "actualizar")));
+
+        const notices = [];
+        if (state.error) notices.push(h("p", { key: "err", className: "h-failure" }, "error: " + state.error));
+        else if (state.loading) notices.push(h("p", { key: "load", className: "h-note" }, "escaneando…"));
+        if (state.active) notices.push(h("p", { key: "mode", className: "h-notice" },
+          "Modo activo: habilidades " + String(state.selectedSkill.size) + " / MCP " + String(state.selectedMCP.size) +
+          ". El texto completo se inyecta en el prompt; marcar demasiados elementos puede alargarlo en exceso."));
+
+        const searchField = h("div", { className: "h-searchField" },
+          h("input", {
+            className: "h-search", type: "search", placeholder: "Buscar conversación / habilidad / MCP…",
+            value: state.search, onChange: function (e) { state.search = e.target.value; notify(); },
+          }));
+
+        function numInput(value, onSet) {
+          return h("input", {
+            className: "h-num", type: "number", min: 0, value: value,
+            onChange: function (e) { onSet(Math.max(0, parseInt(e.target.value, 10) || 0)); },
+          });
+        }
+        const countsField = h("div", { className: "h-counts" },
+          h("span", { className: "h-countsLbl" }, "inicio"),
+          numInput(state.openN, function (n) { state.openN = n; notify(); }),
+          h("span", { className: "h-countsLbl" }, "recientes"),
+          numInput(state.latestM, function (n) { state.latestM = n; notify(); }),
+          h("span", { className: "h-countsTip" }, "mensajes por lado en la vista previa"));
+
+        const chips = [];
+        Object.keys(srcCount).forEach(function (k) {
+          const on = state.sourceFilter.has(k);
+          chips.push(h("button", {
+            key: "s" + k, type: "button", className: on ? "h-chip h-chipOn" : "h-chip",
+            onClick: function () { toggleSet(state.sourceFilter, k); },
+          }, k + " (" + String(srcCount[k]) + ")"));
+        });
+        ["user", "assistant", "tool"].forEach(function (r) {
+          const lbl = r === "user" ? "pregunta" : (r === "assistant" ? "respuesta" : "herramienta");
+          const on = roleOn(r);
+          chips.push(h("button", {
+            key: "r" + r, type: "button", className: on && state.roleFilter.size ? "h-chip h-chipOn" : "h-chip",
+            onClick: function () { toggleSet(state.roleFilter, r); },
+          }, lbl));
+        });
+
+        function group(title, count, rows, emptyText) {
+          const kids = [h("div", { key: "gh", className: "h-groupHead" },
+            h("h2", { className: "h-groupTitle" }, title),
+            h("span", { className: "h-count" }, String(count)))];
+          if (rows.length) kids.push(h("ul", { key: "rows", className: "h-rows" }, rows));
+          else kids.push(h("p", { key: "empty", className: "h-empty" }, emptyText));
+          return h("section", { key: "g-" + title, className: "h-group" }, kids);
+        }
+
+        // Proyectos y repositorios · con conversaciones
+        const groupRows = [];
+        const groupsList = [];
+        projects.forEach(function (p) {
+          const cs = chats.filter(function (c2) { return c2.repo && p.primary_path && c2.repo === p.primary_path; });
+          if (cs.length) groupsList.push({ title: p.name, chats: cs });
+        });
+        repos.forEach(function (r) {
+          const cs = chats.filter(function (c2) { return c2.repo && r.root && c2.repo === r.root; });
+          if (cs.length) groupsList.push({ title: r.label, chats: cs });
+        });
+        const none = chats.filter(function (c2) { return !c2.repo; });
+        if (none.length) groupsList.push({ title: "(conversaciones sin asignar)", chats: none });
+        groupsList.forEach(function (g, gi) {
+          const gkey = "g" + gi;
+          const gopen = !!state.groupOpen[gkey];
+          groupRows.push(h("li", { key: gkey, className: "h-repoWrap" },
+            h("button", {
+              type: "button", className: "h-row", onClick: function () { state.groupOpen[gkey] = !gopen; notify(); },
+            },
+              h("span", { className: "h-rowGlyph" }, Chevron(gopen)),
+              h("span", { className: "h-rowContent" }, h("span", { className: "h-rowTitle" }, g.title)),
+              h("span", { className: "h-rowEnd" }, h("span", { className: "h-meta" }, "conv. " + String(g.chats.length))))));
+          if (gopen) g.chats.slice(0, 40).forEach(function (c, ci) { groupRows.push(h("li", { key: gkey + "-" + ci, className: "h-nested" }, chatRow(c, gkey + "-" + ci))); });
+        });
+
+        // Habilidades
+        const skillRows = skills.slice(0, 60).map(function (s, i) {
+          const checked = state.selectedSkill.has(s.name);
+          const sexp = state.skillOpen === s.name;
+          const kids = [
+            h("div", { key: "hd", className: "h-cardHead" },
+              h("input", {
+                key: "cb", className: "h-cb", type: "checkbox", disabled: !state.active, checked: checked,
+                onChange: function () { if (checked) state.selectedSkill.delete(s.name); else state.selectedSkill.add(s.name); applyActive(); },
+              }),
+              h("span", { key: "tx", className: "h-cardMain" },
+                h("span", { className: "h-rowTitle" }, s.name),
+                h("span", { className: "h-rowSummary" }, s.description || "(sin descripción)")),
+              h("button", {
+                key: "bt", type: "button", className: "h-linkBtn",
+                onClick: function () {
+                  state.skillOpen = sexp ? null : s.name;
+                  if (!sexp) readSkillDetail(s.name).then(function (c) { state.detailCache[s.name] = c; notify(); });
+                  notify();
+                },
+              }, sexp ? "ocultar" : "detalle")),
+          ];
+          if (sexp) kids.push(h("pre", { key: "pre", className: "h-pre" }, (state.detailCache[s.name] || "").slice(0, 2500)));
+          return h("li", { key: "sk" + i, className: "h-card" }, kids);
+        });
+
+        // Servidores MCP
+        const mcpRows = mcp.map(function (m, i) {
+          const ck = state.selectedMCP.has(m.name);
+          const mexp = state.mcpOpen === m.name;
+          const kids = [
+            h("div", { key: "hd", className: "h-cardHead" },
+              h("input", {
+                key: "cb", className: "h-cb", type: "checkbox", disabled: !state.active, checked: ck,
+                onChange: function () { if (ck) state.selectedMCP.delete(m.name); else state.selectedMCP.add(m.name); applyActive(); },
+              }),
+              h("span", { key: "tx", className: "h-cardMain" }, h("span", { className: "h-rowTitle" }, m.name),
+                h("span", { className: "h-rowSummary" }, "marcar para inyectar su configuración")),
+              h("button", {
+                key: "bt", type: "button", className: "h-linkBtn",
+                onClick: function () {
+                  state.mcpOpen = mexp ? null : m.name;
+                  if (!mexp) readMcpDetail(m.name).then(function (c) { state.mcpDetailCache[m.name] = c; notify(); });
+                  notify();
+                },
+              }, mexp ? "ocultar" : "detalle")),
+          ];
+          if (mexp) kids.push(h("pre", { key: "pre", className: "h-pre" }, state.mcpDetailCache[m.name] || "cargando…"));
+          return h("li", { key: "mc" + i, className: "h-card" }, kids);
+        });
+
+        return h("section", { className: "h-page", "aria-label": "Activos de Hermes" },
+          h("div", { className: "h-pageScroll" },
+            h("div", { className: "h-pageContent" },
+              head,
+              notices,
+              searchField,
+              countsField,
+              chips.length ? h("div", { className: "h-chips" }, chips) : null,
+              state.roleFilter.size ? h("p", { className: "h-countsTip h-countsTipBlock" },
+                "Tras cambiar el tipo, vuelve a abrir la conversación: la vista previa se rellenará según el tipo elegido.") : null,
+              group("Proyectos y repositorios", groupsList.length, groupRows, "(sin repositorios o proyectos con conversaciones)"),
+              group("Habilidades", skills.length, skillRows, "(ninguna)"),
+              group("Servidores MCP", mcp.length, mcpRows, "(ninguno)"))));
+      }
+
+      slots.inject("sidebar.panellist", function () {
+        return slots.register({ name: "sidebar.panellist", id: PANEL_ID, order: 5, label: function () { return "Activos de Hermes"; } }, HermesPanelIcon);
       });
-    });
-    styles.insert(` .h-root{display:contents} .h-pill{position:fixed;left:14px;bottom:100px;z-index:90;box-sizing:border-box;height:44px;border-radius:22px;align-items:center;gap:8px;padding:0 16px 0 14px;margin:0;color:var(--dsw-alias-label-primary,#111);background:var(--dsw-alias-bg-base,#fff);border:1px solid var(--dsw-alias-border-l2,#ccc);box-shadow:var(--dsw-shadow-lv2,rgba(0,0,0,0.2));display:inline-flex;cursor:pointer;font-family:inherit;font-size:13px;font-weight:500} .h-pill:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(128,128,128,0.12))} .h-pill-lbl{overflow:hidden;text-overflow:ellipsis;white-space:nowrap} .h-pill-n{flex:none;background:var(--dsw-alias-button-ghost-active-fill,rgba(128,128,128,0.2));border-radius:10px;padding:0 6px;font-size:11px} .h-panel{position:fixed;z-index:89;border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary);max-width:calc(100vw - 20px);max-height:calc(100vh - 20px);box-shadow:var(--dsw-shadow-lv2);border-radius:12px;flex-direction:column;display:flex;overflow:hidden;font-size:13px;line-height:1.4;min-width:320px;min-height:260px} .h-head{box-sizing:border-box;border-bottom:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-base);flex:none;justify-content:space-between;align-items:center;min-height:38px;padding:4px 8px;display:flex;cursor:move} .h-drag{color:var(--dsw-alias-label-tertiary);cursor:move;margin-right:4px;opacity:0.7} .h-title{font-size:13px;font-weight:600;flex:1} .h-acts{display:flex;align-items:center;gap:6px} .h-acts button{background:transparent;border:none;cursor:pointer;font-size:12px;color:var(--dsw-alias-label-secondary)} .h-tog{background:var(--dsw-alias-button-ghost-active-fill,rgba(128,128,128,0.2))!important;border:1px solid var(--dsw-alias-border-l2)!important;border-radius:8px!important;padding:2px 10px!important;font-weight:600} .h-mode{margin:0 0 4px;padding:5px 8px;border:1px dashed var(--dsw-alias-border-l2);border-radius:8px;font-size:12px;color:var(--dsw-alias-label-secondary)} .h-sett{display:flex;align-items:center;gap:5px;flex-wrap:wrap;margin:2px 0;font-size:11px;color:var(--dsw-alias-label-secondary)} .h-sett-lbl{opacity:0.7} .h-sett-tip{opacity:0.75;color:var(--dsw-alias-label-tertiary);font-size:10.5px;margin-left:4px;display:inline-block;width:100%} .h-num{width:44px;background:var(--dsw-alias-bg-base);border:1px solid var(--dsw-alias-border-l2);border-radius:5px;color:var(--dsw-alias-label-primary);font-size:11px;padding:1px 3px} .h-src{display:inline-flex;align-items:center;gap:3px;font-size:10.5px;margin-right:4px;cursor:pointer} .h-src input{margin:0} .h-search{box-sizing:border-box;width:100%;padding:4px 8px;margin:2px 0;border-radius:8px;border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary);font-size:12px} .h-body{flex:1;min-height:0;padding:6px 10px 10px;overflow-y:auto} .h-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;min-height:100%} .h-col{display:flex;flex-direction:column} .h-sec{display:flex;align-items:center;gap:6px;margin:10px 0 6px;font-size:12px;font-weight:600;color:var(--dsw-alias-label-primary);cursor:pointer;user-select:none} .h-sec-arrow{flex:none;width:12px;font-size:11px;opacity:0.7} .h-sec-label{flex:1} .h-repo4{display:grid;grid-template-columns:16px 1fr auto;border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-base);border-radius:8px;padding:5px 8px;margin-bottom:5px;align-items:center} .h-r4-ch{cursor:pointer} .h-r4-name{font-weight:600;font-size:12.5px;cursor:pointer} .h-r4-num{font-size:11px;opacity:0.6;flex:none} .h-c4{display:grid;grid-template-columns:16px minmax(0,1.4fr) 0.7fr 1.2fr auto;gap:6px;align-items:center;padding:3px 2px 3px 8px;font-size:12px;cursor:pointer;border-bottom:1px solid var(--dsw-alias-border-l2)} .h-c4 .h-c4-col{overflow:hidden;text-overflow:ellipsis;white-space:nowrap} .h-c4 .nm{font-weight:500} .h-c4 .id{font-family:monospace;font-size:10.5px;opacity:0.6} .h-c4-edge{flex:none;font-size:11px;opacity:0.7} .h-grp{font-size:10.5px;font-weight:700;opacity:0.75;margin:4px 0 2px 24px;letter-spacing:0.5px} .h-pv{border:1px solid var(--dsw-alias-border-l2);border-radius:6px;margin:3px 0 5px 24px;padding:5px 7px;font-size:11.5px;color:var(--dsw-alias-label-secondary)} .h-pv-role{font-weight:600;margin-right:5px;display:inline-block;margin-bottom:2px} .h-pv-text{white-space:pre-wrap;word-break:break-word;display:-webkit-box;-webkit-line-clamp:4;-webkit-box-orient:vertical;overflow:hidden} .h-btn{background:transparent;border:1px solid var(--dsw-alias-border-l2);border-radius:6px;cursor:pointer;font-size:11px;padding:0 5px;flex:none;color:var(--dsw-alias-label-secondary)} .h-item{border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-base);border-radius:8px;padding:6px 8px;margin-bottom:5px} .h-item-row{display:flex;align-items:center;gap:6px} .h-item-title{flex:1;font-weight:500;font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap} .h-item-sub{font-size:11px;opacity:0.6;word-break:break-all;margin-top:1px} .h-item input{margin:0;flex:none} .h-pre{white-space:pre-wrap;word-break:break-word;margin:6px 0 0;font-size:11px;color:var(--dsw-alias-label-secondary)} .h-note{color:var(--dsw-alias-label-tertiary);font-size:12px;margin:2px 0} .h-note.err{color:var(--dsw-alias-state-error-primary)} .h-rz{position:absolute;width:26px;height:26px;z-index:5} .h-rz-ne{top:-9px;right:-9px;cursor:nesw-resize} .h-rz-se{bottom:-9px;right:-9px;cursor:nwse-resize} .h-rz-sw{bottom:-9px;left:-9px;cursor:nesw-resize} .h-rz-nw{top:-9px;left:-9px;cursor:nwse-resize} `);
-  
+      slots.inject("main", function () {
+        return slots.register({ name: "main", key: PANEL_ID }, HermesPage);
+      });
+
+      styles.insert(`
+.h-page{box-sizing:border-box;height:100%;min-height:0;color:var(--dsw-alias-label-primary);background:var(--dsw-alias-bg-base);font-size:14px;line-height:1.6;display:flex;flex-direction:column;overflow:hidden}
+.h-pageScroll{flex:1;min-height:0;overflow:auto;scrollbar-gutter:stable;--dsh-scrollbar-width:9px;--dsh-scrollbar-thumb-border:2px}
+.h-pageContent{max-width:960px;margin:0 auto;padding:0 clamp(24px,4vw,48px) 48px;box-sizing:border-box}
+.h-pageHead{justify-content:space-between;align-items:flex-start;gap:16px;padding-top:28px;margin-bottom:20px;display:flex}
+[data-platform=darwin] .h-pageHead{padding-top:calc(28px + var(--dsh-frame-top-clearance,0px))}
+.h-headBlock{min-width:0}
+.h-pageTitle{margin:0;font-size:20px;font-weight:500;line-height:28px}
+.h-pageIntro{color:var(--dsw-alias-label-secondary);margin:4px 0 0;font-size:13px;line-height:20px}
+.h-toolbar{flex:none;align-items:center;gap:8px;display:flex}
+.h-modeBtn{border-radius:var(--dsw-radius-md);height:32px;padding:0 12px;font-size:13px;line-height:20px;color:var(--dsw-alias-label-primary);background:transparent;border:.5px solid var(--dsw-alias-border-l3);cursor:pointer;font-family:inherit}
+.h-modeBtn:hover{background:var(--dsw-alias-interactive-bg-hover)}
+.h-iconBtn{border-radius:var(--dsw-radius-sm);height:28px;color:var(--dsw-alias-label-secondary);cursor:pointer;background:0 0;border:0;padding:0 8px;font-size:13px;font-family:inherit;display:inline-flex;align-items:center}
+.h-iconBtn:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}
+.h-linkBtn{border-radius:var(--dsw-radius-sm);color:var(--dsw-alias-label-secondary);font:inherit;cursor:pointer;background:0 0;border:0;align-items:center;padding:1px 6px;font-size:12px;line-height:20px;display:inline-flex;flex:none}
+.h-linkBtn:hover{background:var(--dsw-alias-interactive-bg-hover)}
+.h-note,.h-empty{color:var(--dsw-alias-label-tertiary);margin:0;font-size:13px;line-height:20px}
+.h-failure{color:var(--dsw-alias-state-error-primary);margin:0 0 12px;font-size:13px;line-height:20px}
+.h-notice{background:var(--dsw-specific-sidebar-fill);color:var(--dsw-alias-label-secondary);border-radius:10px;margin:0 0 16px;padding:12px 14px;font-size:12px;line-height:20px}
+.h-searchField{border:.5px solid var(--dsw-alias-border-l3);height:36px;color:var(--dsw-alias-label-tertiary);border-radius:12px;align-items:center;margin:0 0 12px;padding:0 10px;transition:border-color .15s;display:flex}
+.h-searchField:hover{border-color:var(--dsw-alias-border-l2)}
+.h-searchField:focus-within{border-color:var(--dsw-alias-state-business-primary)}
+.h-search{border:0;outline:0;background:0 0;color:var(--dsw-alias-label-primary);font:inherit;flex:1;min-width:0;height:100%;padding:0;font-size:14px}
+.h-search::placeholder{color:var(--dsw-alias-label-caption)}
+.h-search::-webkit-search-cancel-button{display:none}
+.h-counts{flex-wrap:wrap;align-items:center;gap:6px;margin:0 0 12px;display:flex}
+.h-countsLbl{color:var(--dsw-alias-label-tertiary);font-size:13px;line-height:20px}
+.h-countsTip{color:var(--dsw-alias-label-caption);font-size:12px;line-height:18px}
+.h-countsTipBlock{display:block;margin:0 0 12px}
+.h-num{box-sizing:border-box;width:56px;height:28px;color:var(--dsw-alias-label-primary);background:var(--dsw-alias-bg-layer-1);border:.5px solid var(--dsw-alias-border-l3);border-radius:8px;outline:0;padding:0 8px;font:inherit;font-size:13px;text-align:center;font-variant-numeric:tabular-nums}
+.h-num:focus{border-color:var(--dsw-alias-state-business-primary)}
+.h-chips{flex-wrap:wrap;align-items:center;gap:6px;margin-bottom:20px;display:flex}
+.h-chip{height:28px;color:var(--dsw-alias-label-tertiary);font:inherit;white-space:nowrap;cursor:pointer;background:0 0;border:0;border-radius:14px;flex:none;align-items:center;padding:0 10px;font-size:13px;line-height:22px;display:inline-flex}
+.h-chip:hover{background:var(--dsw-alias-interactive-bg-hover)}
+.h-chipOn{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}
+.h-group{flex-direction:column;gap:8px;margin-bottom:28px;display:flex}
+.h-groupHead{align-items:baseline;gap:8px;display:flex}
+.h-groupTitle{margin:0;font-size:14px;font-weight:500;line-height:22px}
+.h-count{color:var(--dsw-alias-label-caption);font-variant-numeric:tabular-nums;font-size:14px}
+.h-rows{flex-direction:column;gap:2px;margin:0;padding:0;list-style:none;display:flex}
+.h-repoWrap,.h-chatWrap{display:block}
+.h-nested{padding-left:18px}
+.h-row{text-align:left;white-space:normal;border-radius:12px;justify-content:flex-start;align-items:flex-start;gap:12px;width:100%;height:auto;padding:8px;display:flex;color:inherit;background:0 0;border:0;font:inherit;cursor:pointer;box-sizing:border-box}
+.h-row:hover{background:var(--dsw-alias-interactive-bg-hover)}
+.h-rowMain{text-align:left;white-space:normal;background:0 0;border:0;font:inherit;color:inherit;cursor:pointer;flex:1;min-width:0;padding:0;margin:0;display:flex;justify-content:flex-start;align-items:flex-start;gap:12px;box-sizing:border-box}
+.h-rowMain:hover{background:0 0}
+.h-rowGlyph{width:16px;height:20px;color:var(--dsw-alias-label-tertiary);flex:none;display:inline-flex;align-items:center;justify-content:center}
+.h-chev{flex:none;transition:transform .15s}
+.h-chevOpen{transform:rotate(90deg)}
+@media (prefers-reduced-motion:reduce){.h-chev{transition:none}}
+.h-pvRole{color:var(--dsw-alias-label-caption);margin-right:6px;font-size:11px;text-transform:uppercase;letter-spacing:.02em}
+.h-rowContent{flex-direction:column;flex:1;min-width:0;display:flex}
+.h-rowTitle{text-overflow:ellipsis;white-space:nowrap;font-weight:500;line-height:23px;overflow:hidden}
+.h-rowSummary{color:var(--dsw-alias-label-tertiary);overflow-wrap:anywhere;margin-top:2px;font-size:13px;line-height:21px;display:block}
+.h-rowEnd{flex:none;align-items:center;gap:8px;display:inline-flex}
+.h-meta{color:inherit;overflow-wrap:anywhere;font-size:13px;line-height:21px}
+.h-meta+.h-meta:before{content:" · ";padding:0 2px}
+.h-card{border-radius:var(--dsw-radius-xl);margin:0;padding:0}
+.h-cardHead{align-items:flex-start;gap:14px;padding:8px;display:flex}
+.h-cardMain{flex-direction:column;flex:1;gap:4px;min-width:0;display:flex}
+.h-cb{flex:none;margin:2px 0 0;accent-color:var(--dsw-alias-state-business-primary)}
+.h-pre{background:var(--dsw-alias-bg-layer-1);border-radius:8px;color:var(--dsw-alias-label-secondary);white-space:pre-wrap;overflow-wrap:anywhere;margin:0 8px 10px;padding:10px 12px;font-size:12px;line-height:18px;max-height:280px;overflow:auto;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+.h-grp{color:var(--dsw-alias-label-tertiary);margin:6px 0 2px;font-size:12px;line-height:18px}
+.h-pv{color:var(--dsw-alias-label-secondary);white-space:pre-wrap;overflow-wrap:anywhere;margin:0 0 4px;font-size:12px;line-height:18px}
+.h-nested .h-grp,.h-nested .h-pv,.h-nested .h-note{padding-left:28px}
+.h-page :focus-visible{outline:var(--dsw-focus-ring-width,2px) solid var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary));outline-offset:2px}
+`);
+
     }
     exports.apply = apply;
     return module.exports;
